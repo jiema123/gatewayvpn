@@ -346,7 +346,7 @@ def print_status():
     
     login_ip = "127.0.0.1" if cfg.get("host") == "127.0.0.1" else get_public_ip()
     print(format_line("网页登录地址", f"{yellow}http://{login_ip}:{ui_port}/{secret_path}/{reset}"))
-    print(format_line("网页管理账号", cfg.get("username", "admin")))
+    print(format_line("网页管理账号", cfg.get("username", "未配置")))
     curr_pwd = cfg.get("password", "")
     masked_pwd = curr_pwd if len(curr_pwd) <= 4 else curr_pwd[:3] + "********" + curr_pwd[-2:]
     print(format_line("网页管理密码", masked_pwd))
@@ -553,7 +553,7 @@ def configure_credentials():
         print("=======================================================")
         print("                    管理账号密码管理                   ")
         print("=======================================================")
-        curr_uname = cfg.get('username', 'admin')
+        curr_uname = cfg.get('username', '未配置')
         curr_pwd = cfg.get('password', '')
         masked_pwd = curr_pwd if len(curr_pwd) <= 4 else curr_pwd[:3] + "********" + curr_pwd[-2:]
         print(f"当前管理账号: {curr_uname}")
@@ -567,9 +567,9 @@ def configure_credentials():
         key = getch()
         if key == '1':
             print("\033[H\033[J", end="")
-            new_uname = input("请输入新管理账号 (回车默认 admin): ").strip()
+            new_uname = input(f"请输入新管理账号 (回车默认 {curr_uname}): ").strip()
             if not new_uname:
-                new_uname = "admin"
+                new_uname = curr_uname
             new_pwd = input("请输入新管理密码 (不能为空): ").strip()
             if not new_pwd:
                 print("错误: 密码不能为空！")
@@ -642,7 +642,7 @@ def get_status_state():
     return (
         cfg.get("port", 8787),
         cfg.get("secret_path", "EJsW2EeBo9lY"),
-        cfg.get("username", "admin"),
+        cfg.get("username", "未配置"),
         cfg.get("password", ""),
         cfg.get("host", "0.0.0.0"),
         state.get("is_connecting", False),
@@ -783,7 +783,15 @@ while True:
         print(pwd)
         break
 ")
-    UI_USERNAME="admin"
+    UI_USERNAME=$(python3 -c "
+import random, string
+chars = string.ascii_letters + string.digits
+while True:
+    uname = ''.join(random.choices(chars, k=12))
+    if uname[0].isalpha() and any(c.islower() for c in uname) and any(c.isupper() for c in uname) and any(c.isdigit() for c in uname):
+        print(uname)
+        break
+")
 
     if [[ "$is_custom" =~ ^[Yy]$ ]]; then
         # Step-by-step custom inputs
@@ -817,7 +825,7 @@ while True:
         done
         
         # 3. Custom login username and password
-        read -p "请输入登录账号 [默认 admin]: " input_user
+        read -p "请输入登录账号 [默认 $UI_USERNAME]: " input_user
         if [ -n "$input_user" ]; then
             UI_USERNAME=$input_user
         fi
@@ -891,13 +899,13 @@ if [ -z "$ACTIVE_ID" ]; then
 fi
 
 SECRET_PATH="EJsW2EeBo9lY"
-USERNAME="admin"
+USERNAME="未配置"
 PASSWORD="未配置"
 UI_PORT=8787
 AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
 if [ -f "$AUTH_FILE" ]; then
     SECRET_PATH=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('secret_path', 'EJsW2EeBo9lY'))" 2>/dev/null || echo "EJsW2EeBo9lY")
-    USERNAME=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('username', 'admin'))" 2>/dev/null || echo "admin")
+    USERNAME=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('username', '未配置'))" 2>/dev/null || echo "未配置")
     PASSWORD=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('password', '未配置'))" 2>/dev/null || echo "未配置")
     UI_PORT=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('port', 8787))" 2>/dev/null || echo "8787")
 fi

@@ -92,11 +92,24 @@ def generate_random_password() -> str:
         if has_lower and has_upper and has_digit:
             return pwd
 
+def generate_random_username() -> str:
+    import string
+    chars = string.ascii_letters + string.digits
+    while True:
+        uname = "".join(random.choices(chars, k=12))
+        # Ensure it starts with a letter and contains at least one lowercase, one uppercase, and one digit
+        if uname[0].isalpha():
+            has_lower = any(c.islower() for c in uname)
+            has_upper = any(c.isupper() for c in uname)
+            has_digit = any(c.isdigit() for c in uname)
+            if has_lower and has_upper and has_digit:
+                return uname
+
 def load_ui_config() -> dict[str, Any]:
     with lock:
         auth_file = DATA_DIR / "ui_auth.json"
         config = {
-            "username": "admin",
+            "username": "",
             "secret_path": "EJsW2EeBo9lY",
             "password": "",
             "host": "0.0.0.0",
@@ -111,6 +124,10 @@ def load_ui_config() -> dict[str, Any]:
             except Exception:
                 pass
         
+        if not config.get("username"):
+            config["username"] = generate_random_username()
+            updated = True
+            
         if not config.get("password"):
             config["password"] = generate_random_password()
             updated = True
