@@ -735,10 +735,21 @@ def main():
         try:
             key = getch()
         except KeyboardInterrupt:
+            print()
             break
             
         if key == '\x03':
+            print()
             break
+            
+        # '0' 键默认退出终端，并打印换行符以保持 Shell 提示符整洁
+        if key == '0':
+            print()
+            break
+            
+        # 回车键 (\r 或 \n) 用于手动刷新当前菜单与连接状态
+        if key in ('\r', '\n', '\x0a', '\x0d'):
+            pass
             
         # Reset last_state to force redraw after any key input
         last_state = None
@@ -746,6 +757,7 @@ def main():
         if key in options:
             name, func = options[key]
             if func is None:
+                print()
                 break
             print("\033[H\033[J", end="")
             print(f"正在执行: {name}...\n")
