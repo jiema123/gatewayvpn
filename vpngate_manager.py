@@ -3035,41 +3035,44 @@ def check_proxy_health() -> dict[str, Any]:
             "error": "VPN 虚拟网卡 (tun0) 未启用，请确保当前已成功连接 VPN 节点"
         }
 
-    # 3. 尝试通过代理请求外网接口
-    proxy_url = f"http://127.0.0.1:{LOCAL_PROXY_PORT}"
-    proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
-    opener = urllib.request.build_opener(proxy_handler)
+    # 3. 使用 curl 通过本地 SOCKS5 代理接口测试 IP 与实际延迟
+    cmd = [
+        "curl", "-4", "-s",
+        "-w", "\n%{time_total} %{http_code}",
+        "-x", f"socks5://127.0.0.1:{LOCAL_PROXY_PORT}",
+        "http://ip.sb",
+        "--max-time", "5"
+    ]
     try:
-        t0 = time.perf_counter()
-        req = urllib.request.Request("http://api.ipify.org?format=json", headers={"User-Agent": "curl/7.68.0"})
-        with opener.open(req, timeout=5) as response:
-            res_data = response.read().decode('utf-8')
-            latency = int((time.perf_counter() - t0) * 1000)
-            try:
-                ip_obj = json.loads(res_data)
-                ip = ip_obj.get("ip") or res_data.strip()
-            except Exception:
-                ip = res_data.strip()
-            return {"ok": True, "ip": ip, "latency_ms": latency}
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+        if res.returncode == 0:
+            lines = res.stdout.strip().splitlines()
+            if len(lines) >= 2:
+                ip = lines[0].strip()
+                time_info = lines[1].strip().split()
+                if len(time_info) == 2:
+                    total_time_str, http_code = time_info
+                    if http_code == "200" and ip:
+                        latency_ms = int(float(total_time_str) * 1000)
+                        return {"ok": True, "ip": ip, "latency_ms": latency_ms}
+        
+        # 如果 ip.sb 失败，使用备用地址 http://api.ipify.org
+        cmd[7] = "http://api.ipify.org"
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+        if res.returncode == 0:
+            lines = res.stdout.strip().splitlines()
+            if len(lines) >= 2:
+                ip = lines[0].strip()
+                time_info = lines[1].strip().split()
+                if len(time_info) == 2:
+                    total_time_str, http_code = time_info
+                    if http_code == "200" and ip:
+                        latency_ms = int(float(total_time_str) * 1000)
+                        return {"ok": True, "ip": ip, "latency_ms": latency_ms}
+                        
+        return {"ok": False, "error": f"出口连接测试失败 (curl 返回码: {res.returncode}, stderr: {res.stderr.strip()})"}
     except Exception as e:
-        try:
-            t0 = time.perf_counter()
-            req = urllib.request.Request("http://ifconfig.me/ip", headers={"User-Agent": "curl/7.68.0"})
-            with opener.open(req, timeout=5) as response:
-                ip = response.read().decode('utf-8').strip()
-                latency = int((time.perf_counter() - t0) * 1000)
-                return {"ok": True, "ip": ip, "latency_ms": latency}
-        except Exception as e2:
-            err_msg = str(e)
-            if "Connection refused" in err_msg or "Failed to receive SOCKS5" in err_msg:
-                return {
-                    "ok": False,
-                    "error": "代理中转握手失败 (OpenVPN 已连接，但无法建立外部 TCP 握手)"
-                }
-            return {
-                "ok": False,
-                "error": f"VPN 节点无外网访问权限 (请求超时或线路被拦截，报错: {e})"
-            }
+        return {"ok": False, "error": f"出口连接测试异常: {e}"}
 
 def background_proxy_checker() -> None:
     time.sleep(2)
