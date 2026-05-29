@@ -756,18 +756,17 @@ def main():
         elif cmd == "status":
             print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
             try:
-                last_state = None
                 while True:
-                    current_state = get_status_state()
-                    if current_state != last_state:
-                        print("\033[H", end="")
-                        print_status()
-                        print_line("\n\033[1;33m提示: 正在实时监控状态，自动更新。按任意键或 Ctrl+C 退出...\033[0m")
-                        print("\033[J", end="", flush=True)
-                        last_state = current_state
-                    key = getch_timeout(1.5)
-                    if key is not None:
+                    print("\033[H", end="")
+                    print_status()
+                    print_line("\n\033[1;33m提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态，按 [q] 或 [Ctrl+C] 退出...\033[0m")
+                    print("\033[J", end="", flush=True)
+                    
+                    key = getch()
+                    if key in ('q', 'Q', '\x03'):
                         break
+                    if key in ('\r', '\n', '\x0a', '\x0d'):
+                        continue
             except KeyboardInterrupt:
                 pass
             finally:
@@ -804,10 +803,9 @@ def main():
     # Enter alternate buffer and hide cursor
     print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
     try:
-        last_state = None
+        need_redraw = True
         while True:
-            current_state = get_status_state()
-            if current_state != last_state:
+            if need_redraw:
                 print("\033[H", end="")
                 print_status()
                 
@@ -823,17 +821,15 @@ def main():
                     print_line(f"  {green}[{key}]{reset} {name}")
                 print_line(f"  {green}[0]{reset} {options['0'][0]}")
                 print_line("=======================================================")
+                print_line("提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态。")
                 print("请直接输入数字键 [0-9] 快速选择执行：\033[K", end="", flush=True)
                 print("\033[J", end="", flush=True)
-                last_state = current_state
+                need_redraw = False
                 
             try:
-                key = getch_timeout(1.0)
+                key = getch()
             except KeyboardInterrupt:
                 break
-                
-            if key is None:
-                continue
                 
             if key == '\x03' or key == 'q' or key == 'Q':
                 break
@@ -842,7 +838,7 @@ def main():
                 break
                 
             if key in ('\r', '\n', '\x0a', '\x0d'):
-                last_state = None
+                need_redraw = True
                 continue
                 
             if key in options:
@@ -865,7 +861,7 @@ def main():
                     
                 # Re-enter alternate buffer and hide cursor
                 print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
-                last_state = None
+                need_redraw = True
     finally:
         # Exit alternate buffer and show cursor on exit
         print("\033[?1049l\033[?25h", end="", flush=True)

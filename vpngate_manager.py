@@ -218,6 +218,8 @@ def get_state() -> dict[str, Any]:
     state["username"] = ui_cfg.get("username", "admin")
     state["port"] = ui_cfg.get("port", 8787)
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
+    state["enable_force_country"] = ui_cfg.get("enable_force_country", False)
+    state["force_country"] = ui_cfg.get("force_country", "")
     
     return state
 
@@ -776,11 +778,19 @@ def auto_switch_node(attempt: int = 0) -> None:
     # Find the next best available node
     with lock:
         nodes = read_json(NODES_FILE, [])
+        ui_cfg = load_ui_config()
+        enable_force = ui_cfg.get("enable_force_country", False)
+        target_country = ui_cfg.get("force_country", "")
+        
         candidates = [
             n for n in nodes 
             if n.get("probe_status") == "available" 
             and not n.get("active")
         ]
+        
+        if enable_force and target_country:
+            candidates = [n for n in candidates if n.get("country") == target_country]
+            
         candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
         
     if candidates:
@@ -993,7 +1003,14 @@ def maintain_valid_nodes(force: bool = False) -> str:
         with lock:
             merged = read_json(NODES_FILE, [])
             if not active_openvpn_running():
+                ui_cfg = load_ui_config()
+                enable_force = ui_cfg.get("enable_force_country", False)
+                target_country = ui_cfg.get("force_country", "")
+                
                 available_candidates = [n for n in merged if n.get("probe_status") == "available"]
+                if enable_force and target_country:
+                    available_candidates = [n for n in available_candidates if n.get("country") == target_country]
+                
                 if available_candidates:
                     auto_switch_node()
 
@@ -2306,6 +2323,26 @@ INDEX_HTML = r"""<!doctype html>
             <input type="password" id="settings_new_password" class="input-field" placeholder="留空则不修改">
           </div>
         </div>
+
+        <div style="border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 16px; margin-bottom: 16px;">
+          <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); font-weight: 600; margin-bottom: 12px;">出站IP路由设置 (锁定出站国家)</div>
+          
+          <div class="form-group" style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="settings_enable_force" style="width: 16px; height: 16px; cursor: pointer; margin: 0;" onchange="toggleForceCountrySelect(this.checked)">
+            <label class="form-label" for="settings_enable_force" style="margin-bottom: 0; cursor: pointer; user-select: none;">启用强制锁定出站国家/地区</label>
+          </div>
+          
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label" for="settings_force_country">锁定国家</label>
+            <select id="settings_force_country" class="input-field" style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;" disabled>
+              <option value="">正在加载节点国家...</option>
+            </select>
+          </div>
+          
+          <div style="font-size: 12px; color: var(--warning); line-height: 1.4; padding: 8px 12px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px; margin-top: 8px;">
+            ⚠️ <strong>注意</strong>：强制指向特定国家的出站IP在没有获取到该国最新可用节点的情况下可能导致代理连接失效。
+          </div>
+        </div>
         
         <div style="margin-bottom: 24px;">
           <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); font-weight: 600; margin-bottom: 12px;">安全验证 (必须输入当前账号密码)</div>
@@ -2942,6 +2979,34 @@ if (adminBtn && adminDropdown) {
   });
 }
 
+function toggleForceCountrySelect(enabled) {
+  $("settings_force_country").disabled = !enabled;
+}
+
+function populateSettingsCountries() {
+  const select = $("settings_force_country");
+  const countMap = {};
+  nodes.forEach(n => {
+    if (n.country) {
+      countMap[n.country] = (countMap[n.country] || 0) + 1;
+    }
+  });
+  
+  const countries = Object.keys(countMap).sort();
+  let html = '<option value="">请选择要锁定的国家...</option>';
+  countries.forEach(c => {
+    html += `<option value="${esc(c)}">${esc(c)} (${countMap[c]}个节点)</option>`;
+  });
+  select.innerHTML = html;
+  
+  if (state) {
+    const enabled = state.enable_force_country || false;
+    $("settings_enable_force").checked = enabled;
+    select.value = state.force_country || "";
+    toggleForceCountrySelect(enabled);
+  }
+}
+
 function openSettingsModal() {
   $("settings_error").style.display = "none";
   $("settings_success").style.display = "none";
@@ -2951,6 +3016,8 @@ function openSettingsModal() {
     $("settings_port").value = state.port || 8787;
     $("settings_suffix").value = state.secret_path || "EJsW2EeBo9lY";
   }
+  
+  populateSettingsCountries();
   
   $("settings_modal").style.display = "flex";
   $("admin_dropdown").style.display = "none";
@@ -2975,6 +3042,8 @@ async function saveSettings(e) {
   const newPassword = $("settings_new_password").value.trim();
   const currUsername = $("settings_curr_username").value.trim();
   const currPassword = $("settings_curr_password").value.trim();
+  const enableForce = $("settings_enable_force").checked;
+  const forceCountry = $("settings_force_country").value;
   
   if (isNaN(port) || port < 1 || port > 65535) {
     errorDivEl.textContent = "端口范围必须在 1 至 65535 之间";
@@ -2984,6 +3053,12 @@ async function saveSettings(e) {
   
   if (!/^[A-Za-z0-9]+$/.test(suffix)) {
     errorDivEl.textContent = "登录安全后缀仅能由英文字母和数字组成";
+    errorDivEl.style.display = "block";
+    return;
+  }
+  
+  if (enableForce && !forceCountry) {
+    errorDivEl.textContent = "请选择一个要锁定的目标国家";
     errorDivEl.style.display = "block";
     return;
   }
@@ -3001,23 +3076,34 @@ async function saveSettings(e) {
         new_username: newUsername,
         new_password: newPassword,
         curr_username: currUsername,
-        curr_password: currPassword
+        curr_password: currPassword,
+        enable_force_country: enableForce,
+        force_country: forceCountry
       })
     });
     
     const data = await res.json();
     if (res.ok && data.ok) {
-      successDiv.textContent = "保存成功！页面将在 4 秒内自动跳转至新地址...";
-      successDiv.style.display = "block";
-      
-      const inputs = $("settings_form").querySelectorAll("input, button");
-      inputs.forEach(el => el.disabled = true);
-      
-      setTimeout(() => {
-        const protocol = window.location.protocol;
-        const host = window.location.hostname;
-        window.location.href = `${protocol}//${host}:${port}/${suffix}/`;
-      }, 4000);
+      if (data.restart_needed) {
+        successDiv.textContent = "保存成功！端口/安全路径已变更，页面将在 4 秒内自动跳转...";
+        successDiv.style.display = "block";
+        
+        const inputs = $("settings_form").querySelectorAll("input, button, select");
+        inputs.forEach(el => el.disabled = true);
+        
+        setTimeout(() => {
+          const protocol = window.location.protocol;
+          const host = window.location.hostname;
+          window.location.href = `${protocol}//${host}:${port}/${suffix}/`;
+        }, 4000);
+      } else {
+        successDiv.textContent = "配置保存成功，已即时生效！";
+        successDiv.style.display = "block";
+        setTimeout(() => {
+          closeSettingsModal();
+          load();
+        }, 1500);
+      }
     } else {
       errorDivEl.textContent = data.error || "保存失败，请检查输入";
       errorDivEl.style.display = "block";
@@ -3411,6 +3497,8 @@ class Handler(BaseHTTPRequestHandler):
                 new_suffix = str(payload.get("secret_path") or "").strip()
                 new_username = str(payload.get("new_username") or "").strip()
                 new_password = str(payload.get("new_password") or "").strip()
+                enable_force_country = bool(payload.get("enable_force_country"))
+                force_country = str(payload.get("force_country") or "").strip()
                 
                 if not curr_username or not curr_password:
                     self.send_json({"ok": False, "error": "请输入当前账号和密码进行安全验证"}, HTTPStatus.FORBIDDEN)
@@ -3419,6 +3507,8 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg = load_ui_config()
                 expected_uname = ui_cfg.get("username", "admin")
                 expected_pwd = ui_cfg.get("password", "")
+                expected_port = ui_cfg.get("port", 8787)
+                expected_suffix = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
                 
                 if curr_username != expected_uname or curr_password != expected_pwd:
                     self.send_json({"ok": False, "error": "当前账号或密码不正确"}, HTTPStatus.FORBIDDEN)
@@ -3438,6 +3528,8 @@ class Handler(BaseHTTPRequestHandler):
                 
                 ui_cfg["port"] = new_port_int
                 ui_cfg["secret_path"] = new_suffix
+                ui_cfg["enable_force_country"] = enable_force_country
+                ui_cfg["force_country"] = force_country
                 if new_username:
                     ui_cfg["username"] = new_username
                 if new_password:
@@ -3448,14 +3540,18 @@ class Handler(BaseHTTPRequestHandler):
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     auth_file.write_text(json.dumps(ui_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
                 
-                self.send_json({"ok": True, "message": "配置更新成功，系统将在 2 秒内重启..."})
-                
-                def restart_server():
-                    time.sleep(2)
-                    print("[系统] 管理后台配置更新，进程即将退出以触发自动重启...", flush=True)
-                    os._exit(0)
-                
-                threading.Thread(target=restart_server, daemon=True).start()
+                restart_needed = (new_port_int != expected_port or new_suffix != expected_suffix)
+                if restart_needed:
+                    self.send_json({"ok": True, "restart_needed": True, "message": "配置更新成功，系统及网页路径变更，将在 2 秒内重启..."})
+                    
+                    def restart_server():
+                        time.sleep(2)
+                        print("[系统] 管理后台配置更新，进程即将退出以触发自动重启...", flush=True)
+                        os._exit(0)
+                    
+                    threading.Thread(target=restart_server, daemon=True).start()
+                else:
+                    self.send_json({"ok": True, "restart_needed": False, "message": "配置更新成功，已即时生效！"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
