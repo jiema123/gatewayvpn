@@ -13,8 +13,8 @@ Bilingual: [中文](#中文) | [English](#english)
 
 ---
 
-```bash
 bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/bate/install.sh)
+
 ---
 
-## 此版本为测试版本，非开发人员请勿尝试，这可能会造成您的数据永久丢失！
+此版本为测试版本，非开发人员请勿尝试，这可能会造成您的数据永久丢失！
