@@ -183,7 +183,7 @@ def get_physical_interface() -> str | None:
                     except (ValueError, IndexError):
                         continue
             if routes:
-                routes.sort(key=lambda x: x[2], reverse=True)
+                routes.sort(key=lambda x: x[2])
                 for gw, dev, metric in routes:
                     if not dev.startswith(("tun", "tap", "wg", "ppp")):
                         return dev
