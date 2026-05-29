@@ -82,8 +82,16 @@ fi
 
 # 4. Clone or pull the repository
 INSTALL_DIR="/opt/aimilivpn"
-DEPLOY_BRANCH="bate"
-echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR} (分支: ${DEPLOY_BRANCH})...${PLAIN}"
+DEFAULT_DEPLOY_BRANCH="bate"
+
+# Auto-detect checked-out branch if it's already installed
+CURRENT_BRANCH=""
+if [ -d "${INSTALL_DIR}/.git" ]; then
+    CURRENT_BRANCH=$(cd "${INSTALL_DIR}" && git rev-parse --abbrev-ref HEAD 2>/dev/null)
+fi
+DEPLOY_BRANCH="${CURRENT_BRANCH:-$DEFAULT_DEPLOY_BRANCH}"
+
+echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR} (目标分支: ${DEPLOY_BRANCH})...${PLAIN}"
 if [ -f "${INSTALL_DIR}/.local_dev" ]; then
     echo -e "${GREEN}检测到本地开发模式 (.local_dev)，跳过 git pull/reset 保持本地修改。${PLAIN}"
 else
