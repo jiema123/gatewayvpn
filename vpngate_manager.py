@@ -218,7 +218,7 @@ def get_state() -> dict[str, Any]:
     state["username"] = ui_cfg.get("username", "admin")
     state["port"] = ui_cfg.get("port", 8787)
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
-    state["enable_force_country"] = ui_cfg.get("enable_force_country", False)
+    state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
     state["force_country"] = ui_cfg.get("force_country", "")
     
     return state
@@ -775,20 +775,33 @@ def auto_switch_node(attempt: int = 0) -> None:
         print("[自动切换] 连续切换失败已达 3 次，停止切换以防止主线程死锁，将在后台重新加载节点...", flush=True)
         return
         
+    ui_cfg = load_ui_config()
+    routing_mode = ui_cfg.get("routing_mode", "auto")
+    target_country = ui_cfg.get("force_country", "")
+
+    if routing_mode == "fixed_ip":
+        print("[自动切换] 当前处于固定 IP 模式，不进行自动切换。", flush=True)
+        if active_openvpn_node_id:
+            if not active_openvpn_running():
+                print(f"[自动切换] 固定 IP 模式检测到连接已断开，尝试重新连接原节点: {active_openvpn_node_id}", flush=True)
+                def reconnect_bg():
+                    try:
+                        connect_node(active_openvpn_node_id)
+                    except Exception as e:
+                        print(f"[自动切换] 重新连接固定节点失败: {e}", flush=True)
+                threading.Thread(target=reconnect_bg, daemon=True).start()
+        return
+
     # Find the next best available node
     with lock:
         nodes = read_json(NODES_FILE, [])
-        ui_cfg = load_ui_config()
-        enable_force = ui_cfg.get("enable_force_country", False)
-        target_country = ui_cfg.get("force_country", "")
-        
         candidates = [
             n for n in nodes 
             if n.get("probe_status") == "available" 
             and not n.get("active")
         ]
         
-        if enable_force and target_country:
+        if routing_mode == "fixed_region" and target_country:
             candidates = [n for n in candidates if n.get("country") == target_country]
             
         candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
@@ -807,6 +820,8 @@ def auto_switch_node(attempt: int = 0) -> None:
             auto_switch_node(attempt + 1)
     else:
         msg = "没有可用的备选节点，将自动断开并清理当前连接状态，同时在后台异步获取新节点..."
+        if routing_mode == "fixed_region" and target_country:
+            msg = f"没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点..."
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("WARNING", "VPN", msg)
         stop_active_openvpn()
@@ -815,7 +830,7 @@ def auto_switch_node(attempt: int = 0) -> None:
             for item in nodes:
                 item["active"] = False
             write_json(NODES_FILE, nodes)
-        set_state(active_openvpn_node_id="", last_check_message="没有可用的备选节点，已断开")
+        set_state(active_openvpn_node_id="", last_check_message=msg)
         
         def bg_fetch_and_switch():
             try:
@@ -991,7 +1006,15 @@ def maintain_valid_nodes(force: bool = False) -> str:
         # Test the first 10 non-active nodes from the new list
         with lock:
             current_nodes = read_json(NODES_FILE, [])
-            to_test = [n for n in current_nodes if not n.get("active")][:10]
+            ui_cfg = load_ui_config()
+            routing_mode = ui_cfg.get("routing_mode", "auto")
+            target_country = ui_cfg.get("force_country", "")
+            
+            if routing_mode == "fixed_region" and target_country:
+                to_test = [n for n in current_nodes if not n.get("active") and n.get("country") == target_country][:10]
+            else:
+                to_test = [n for n in current_nodes if not n.get("active")][:10]
+                
             to_test_ids = [n["id"] for n in to_test]
             
         print(f"[维护线程] 正在检测新获取列表的前 10 个节点: {to_test_ids}", flush=True)
@@ -1004,15 +1027,19 @@ def maintain_valid_nodes(force: bool = False) -> str:
             merged = read_json(NODES_FILE, [])
             if not active_openvpn_running():
                 ui_cfg = load_ui_config()
-                enable_force = ui_cfg.get("enable_force_country", False)
+                routing_mode = ui_cfg.get("routing_mode", "auto")
                 target_country = ui_cfg.get("force_country", "")
                 
-                available_candidates = [n for n in merged if n.get("probe_status") == "available"]
-                if enable_force and target_country:
-                    available_candidates = [n for n in available_candidates if n.get("country") == target_country]
-                
-                if available_candidates:
-                    auto_switch_node()
+                if routing_mode == "fixed_ip":
+                    if active_openvpn_node_id:
+                        auto_switch_node()
+                else:
+                    available_candidates = [n for n in merged if n.get("probe_status") == "available"]
+                    if routing_mode == "fixed_region" and target_country:
+                        available_candidates = [n for n in available_candidates if n.get("country") == target_country]
+                    
+                    if available_candidates:
+                        auto_switch_node()
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         message = f"Fetched {len(candidates)} nodes. Tested first 10 nodes."
@@ -2325,22 +2352,26 @@ INDEX_HTML = r"""<!doctype html>
         </div>
 
         <div style="border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 16px; margin-bottom: 16px;">
-          <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); font-weight: 600; margin-bottom: 12px;">出站IP路由设置 (锁定出站国家)</div>
-          
-          <div class="form-group" style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-            <input type="checkbox" id="settings_enable_force" style="width: 16px; height: 16px; cursor: pointer; margin: 0;" onchange="toggleForceCountrySelect(this.checked)">
-            <label class="form-label" for="settings_enable_force" style="margin-bottom: 0; cursor: pointer; user-select: none;">启用强制锁定出站国家/地区</label>
-          </div>
+          <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); font-weight: 600; margin-bottom: 12px;">出站IP路由设置</div>
           
           <div class="form-group" style="margin-bottom: 12px;">
-            <label class="form-label" for="settings_force_country">锁定国家</label>
-            <select id="settings_force_country" class="input-field" style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;" disabled>
+            <label class="form-label" for="settings_routing_mode">IP 路由模式</label>
+            <select id="settings_routing_mode" class="input-field" style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;" onchange="handleRoutingModeChange(this.value)">
+              <option value="auto">自动配置 (智能切换，最稳定)</option>
+              <option value="fixed_ip">固定 IP (永不自动换 IP)</option>
+              <option value="fixed_region">固定地区 (锁定特定国家节点)</option>
+            </select>
+          </div>
+          
+          <div id="settings_force_country_group" class="form-group" style="margin-bottom: 12px; display: none;">
+            <label class="form-label" for="settings_force_country">锁定国家地区</label>
+            <select id="settings_force_country" class="input-field" style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;">
               <option value="">正在加载节点国家...</option>
             </select>
           </div>
           
-          <div style="font-size: 12px; color: var(--warning); line-height: 1.4; padding: 8px 12px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px; margin-top: 8px;">
-            ⚠️ <strong>注意</strong>：强制指向特定国家的出站IP在没有获取到该国最新可用节点的情况下可能导致代理连接失效。
+          <div id="settings_routing_warning" style="font-size: 12px; color: var(--warning); line-height: 1.4; padding: 8px 12px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px; margin-top: 8px;">
+            ℹ️ <strong>自动配置</strong>：全自动测试并选择最佳IP。在使用过程中，如果当前连接节点没有失效，将不再更换IP；如果当前节点失效，系统将立刻秒级自动漂移到其他最快的可用节点。
           </div>
         </div>
         
@@ -2979,8 +3010,29 @@ if (adminBtn && adminDropdown) {
   });
 }
 
-function toggleForceCountrySelect(enabled) {
-  $("settings_force_country").disabled = !enabled;
+function handleRoutingModeChange(mode) {
+  const countryGroup = $("settings_force_country_group");
+  const warningDiv = $("settings_routing_warning");
+  
+  if (mode === "fixed_region") {
+    countryGroup.style.display = "block";
+    warningDiv.style.color = "var(--warning)";
+    warningDiv.style.background = "rgba(245, 158, 11, 0.1)";
+    warningDiv.style.border = "1px solid rgba(245, 158, 11, 0.2)";
+    warningDiv.innerHTML = `⚠️ <strong>固定地区</strong>：限制仅连接选定国家的节点，且后台仅并发测速该国家的节点。如果该国的所有可用节点都失效，会造成代理中断且<strong>绝不自动切换到其他国家</strong>的节点。`;
+  } else if (mode === "fixed_ip") {
+    countryGroup.style.display = "none";
+    warningDiv.style.color = "var(--warning)";
+    warningDiv.style.background = "rgba(245, 158, 11, 0.1)";
+    warningDiv.style.border = "1px solid rgba(245, 158, 11, 0.2)";
+    warningDiv.innerHTML = `⚠️ <strong>固定IP</strong>：锁定当前连接的节点。不管该节点是否失效，系统都绝不自动切换至其他IP；如果节点由于网络故障失效，会造成代理中断（但如果OpenVPN连接意外退出，脚本将尝试为您在后台重新拉起连接同一IP）。<br><strong>提示</strong>：您可以在主页的节点列表中直接点击“连接”按钮来选择并锁定不同的IP节点。`;
+  } else {
+    countryGroup.style.display = "none";
+    warningDiv.style.color = "var(--text-secondary)";
+    warningDiv.style.background = "rgba(255, 255, 255, 0.02)";
+    warningDiv.style.border = "1px solid rgba(255, 255, 255, 0.05)";
+    warningDiv.innerHTML = `ℹ️ <strong>自动配置</strong>：全自动测试并选择最佳IP。在使用过程中，如果当前连接节点没有失效，将不再更换IP；如果当前节点失效，系统将立刻秒级自动漂移到其他最快的可用节点。`;
+  }
 }
 
 function populateSettingsCountries() {
@@ -3000,10 +3052,10 @@ function populateSettingsCountries() {
   select.innerHTML = html;
   
   if (state) {
-    const enabled = state.enable_force_country || false;
-    $("settings_enable_force").checked = enabled;
+    const mode = state.routing_mode || "auto";
+    $("settings_routing_mode").value = mode;
     select.value = state.force_country || "";
-    toggleForceCountrySelect(enabled);
+    handleRoutingModeChange(mode);
   }
 }
 
@@ -3042,7 +3094,7 @@ async function saveSettings(e) {
   const newPassword = $("settings_new_password").value.trim();
   const currUsername = $("settings_curr_username").value.trim();
   const currPassword = $("settings_curr_password").value.trim();
-  const enableForce = $("settings_enable_force").checked;
+  const routingMode = $("settings_routing_mode").value;
   const forceCountry = $("settings_force_country").value;
   
   if (isNaN(port) || port < 1 || port > 65535) {
@@ -3057,7 +3109,7 @@ async function saveSettings(e) {
     return;
   }
   
-  if (enableForce && !forceCountry) {
+  if (routingMode === "fixed_region" && !forceCountry) {
     errorDivEl.textContent = "请选择一个要锁定的目标国家";
     errorDivEl.style.display = "block";
     return;
@@ -3077,7 +3129,7 @@ async function saveSettings(e) {
         new_password: newPassword,
         curr_username: currUsername,
         curr_password: currPassword,
-        enable_force_country: enableForce,
+        routing_mode: routingMode,
         force_country: forceCountry
       })
     });
@@ -3497,8 +3549,12 @@ class Handler(BaseHTTPRequestHandler):
                 new_suffix = str(payload.get("secret_path") or "").strip()
                 new_username = str(payload.get("new_username") or "").strip()
                 new_password = str(payload.get("new_password") or "").strip()
-                enable_force_country = bool(payload.get("enable_force_country"))
+                routing_mode = str(payload.get("routing_mode") or "auto").strip()
                 force_country = str(payload.get("force_country") or "").strip()
+                
+                if routing_mode not in ("auto", "fixed_ip", "fixed_region"):
+                    self.send_json({"ok": False, "error": "无效的路由配置模式"}, HTTPStatus.BAD_REQUEST)
+                    return
                 
                 if not curr_username or not curr_password:
                     self.send_json({"ok": False, "error": "请输入当前账号和密码进行安全验证"}, HTTPStatus.FORBIDDEN)
@@ -3528,8 +3584,9 @@ class Handler(BaseHTTPRequestHandler):
                 
                 ui_cfg["port"] = new_port_int
                 ui_cfg["secret_path"] = new_suffix
-                ui_cfg["enable_force_country"] = enable_force_country
+                ui_cfg["routing_mode"] = routing_mode
                 ui_cfg["force_country"] = force_country
+                ui_cfg.pop("enable_force_country", None)
                 if new_username:
                     ui_cfg["username"] = new_username
                 if new_password:
