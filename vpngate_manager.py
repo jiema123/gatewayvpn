@@ -2129,6 +2129,10 @@ INDEX_HTML = r"""<!doctype html>
       box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
       background: rgba(15, 23, 42, 0.6);
     }
+    select option {
+      background-color: #0f172a;
+      color: #f8fafc;
+    }
   </style>
 </head>
 <body>
