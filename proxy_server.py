@@ -28,6 +28,11 @@ def resolve_dns_over_tun0(host: str, dns_server: str = "8.8.8.8", timeout: float
         return host
     except OSError:
         pass
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+        return host
+    except OSError:
+        pass
 
     import random
     tx_id = random.getrandbits(16).to_bytes(2, "big")
@@ -261,18 +266,54 @@ def proxy_client(client: socket.socket, address: tuple[str, int]) -> None:
             pass
 
 def start_proxy_server(host: str, port: int) -> None:
+    is_ipv6 = ":" in host or host == ""
+    af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
     try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server = socket.socket(af, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if is_ipv6:
+            try:
+                server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except OSError:
+                pass
         server.bind((host, port))
         server.listen(256)
         print(f"HTTP/SOCKS5 proxy listening on {host}:{port}", flush=True)
     except Exception as e:
-        import vpn_utils
-        diag = vpn_utils.diagnose_local_obstructions(port)
-        diag_msg = diag[1] if diag else str(e)
-        print(f"[ERROR] Failed to start HTTP/SOCKS5 proxy on {host}:{port}: {diag_msg}", flush=True)
-        return
+        if is_ipv6 and host == "::":
+            print(f"[警告] 绑定 IPv6 {host}:{port} 失败 ({e})，正在尝试回退至 IPv4 0.0.0.0 ...", flush=True)
+            try:
+                server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                server.bind(("0.0.0.0", port))
+                server.listen(256)
+                print(f"HTTP/SOCKS5 proxy listening on 0.0.0.0:{port} (仅 IPv4)", flush=True)
+            except Exception as ex:
+                import vpn_utils
+                diag = vpn_utils.diagnose_local_obstructions(port, host="0.0.0.0")
+                diag_msg = diag[1] if diag else str(ex)
+                print(f"[ERROR] Failed to start HTTP/SOCKS5 proxy on 0.0.0.0:{port}: {diag_msg}", flush=True)
+                return
+        elif is_ipv6 and host == "::1":
+            print(f"[警告] 绑定 IPv6 {host}:{port} 失败 ({e})，正在尝试回退至 IPv4 127.0.0.1 ...", flush=True)
+            try:
+                server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                server.bind(("127.0.0.1", port))
+                server.listen(256)
+                print(f"HTTP/SOCKS5 proxy listening on 127.0.0.1:{port} (仅 IPv4)", flush=True)
+            except Exception as ex:
+                import vpn_utils
+                diag = vpn_utils.diagnose_local_obstructions(port, host="127.0.0.1")
+                diag_msg = diag[1] if diag else str(ex)
+                print(f"[ERROR] Failed to start HTTP/SOCKS5 proxy on 127.0.0.1:{port}: {diag_msg}", flush=True)
+                return
+        else:
+            import vpn_utils
+            diag = vpn_utils.diagnose_local_obstructions(port, host=host)
+            diag_msg = diag[1] if diag else str(e)
+            print(f"[ERROR] Failed to start HTTP/SOCKS5 proxy on {host}:{port}: {diag_msg}", flush=True)
+            return
 
     while True:
         try:

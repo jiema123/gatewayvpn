@@ -207,7 +207,7 @@ def generate_random_suffix():
 def load_ui_cfg():
     import json
     path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
-    cfg = {"host": "0.0.0.0", "port": 8787, "secret_path": "EJsW2EeBo9lY", "password": ""}
+    cfg = {"host": "::", "port": 8787, "secret_path": "EJsW2EeBo9lY", "password": ""}
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -295,31 +295,35 @@ def get_public_ip():
         except Exception:
             pass
     import urllib.request
-    try:
-        req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "curl/7.68.0"})
-        with urllib.request.urlopen(req, timeout=1.5) as r:
-            ip = r.read().decode().strip()
-            if ip:
-                try:
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(ip)
-                except Exception:
-                    pass
-                return ip
-    except Exception:
-        pass
+    # Try dual-stack first, then IPv6-only, then IPv4-only
+    for api_url in ["https://api64.ipify.org", "https://api6.ipify.org", "https://api.ipify.org"]:
+        try:
+            req = urllib.request.Request(api_url, headers={"User-Agent": "curl/7.68.0"})
+            with urllib.request.urlopen(req, timeout=2) as r:
+                ip = r.read().decode().strip()
+                if ip:
+                    try:
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(ip)
+                    except Exception:
+                        pass
+                    return ip
+        except Exception:
+            pass
     return "您的服务器公网IP"
 
 def check_port_listening(port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(0.2)
-    try:
-        s.connect(("127.0.0.1", port))
-        s.close()
-        return True
-    except Exception:
-        return False
+    for host, family in [("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)]:
+        try:
+            s = socket.socket(family, socket.SOCK_STREAM)
+            s.settimeout(0.2)
+            s.connect((host, port))
+            s.close()
+            return True
+        except Exception:
+            pass
+    return False
 
 def get_service_pid(service_name="aimilivpn.service"):
     try:
@@ -413,7 +417,15 @@ def print_status():
     print_line(format_line(f"管理后台 (Port {ui_port})", backend_status))
     print_line(format_line("连接核心 (OpenVPN)", openvpn_status))
     
-    login_ip = "127.0.0.1" if cfg.get("host") == "127.0.0.1" else get_public_ip()
+    host_cfg = cfg.get("host", "::")
+    if host_cfg in ("127.0.0.1", "localhost"):
+        login_ip = "127.0.0.1"
+    elif host_cfg == "::1":
+        login_ip = "[::1]"
+    elif host_cfg == "::":
+        login_ip = get_public_ip()
+    else:
+        login_ip = f"[{host_cfg}]" if ":" in host_cfg else host_cfg
     print_line(format_line("网页登录地址", f"{yellow}http://{login_ip}:{ui_port}/{secret_path}/{reset}"))
     print_line(format_line("网页管理账号", cfg.get("username", "未配置")))
     curr_pwd = cfg.get("password", "")
@@ -441,9 +453,26 @@ def print_status():
     else:
         print_line(format_line("节点状态", "无活动连接"))
     print_line()
+    local_proxy = state.get("local_proxy", "http://127.0.0.1:7928")
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlsplit(local_proxy)
+        proxy_host = parsed.hostname or "127.0.0.1"
+        proxy_port = parsed.port or 7928
+    except Exception:
+        proxy_host = "127.0.0.1"
+        proxy_port = 7928
+    
+    if proxy_host == "::":
+        socks_addr = "127.0.0.1"
+    elif ":" in proxy_host:
+        socks_addr = f"[{proxy_host}]"
+    else:
+        socks_addr = proxy_host
+
     print_line("【使用方法】")
-    print_line(f"  export http_proxy=socks5://127.0.0.1:7928")
-    print_line(f"  export https_proxy=socks5://127.0.0.1:7928")
+    print_line(f"  export http_proxy=socks5://{socks_addr}:{proxy_port}")
+    print_line(f"  export https_proxy=socks5://{socks_addr}:{proxy_port}")
     print_line("=======================================================")
 
 def run_service_cmd(cmd):
@@ -593,13 +622,19 @@ def configure_web():
         if key == '1':
             print("\033[H\033[J", end="")
             print("选择网页登录绑定地址：")
-            print("  1. 仅允许本地登录 (127.0.0.1 - 更安全)")
-            print("  2. 允许公网IP登录 (0.0.0.0 - 方便远程)")
-            sel = input("请选择 (1 或 2, 默认2): ").strip()
+            print("  1. 仅允许本地 IPv4 登录 (127.0.0.1 - 更安全)")
+            print("  2. 允许 IPv4 公网登录 (0.0.0.0)")
+            print("  3. 允许 IPv4 & IPv6 双栈公网登录 (:: - 推荐)")
+            print("  4. 仅允许本地 IPv6 登录 (::1)")
+            sel = input("请选择 (1/2/3/4, 默认3): ").strip()
             if sel == '1':
                 cfg['host'] = "127.0.0.1"
-            else:
+            elif sel == '2':
                 cfg['host'] = "0.0.0.0"
+            elif sel == '4':
+                cfg['host'] = "::1"
+            else:
+                cfg['host'] = "::"
             save_ui_cfg(cfg)
             print(f"绑定地址已更新为: {cfg['host']}")
             ask_restart()
@@ -611,7 +646,10 @@ def configure_web():
             save_ui_cfg(cfg)
             print("安全登录后缀已随机重置成功！")
             print(f"您的全新安全登录后缀为: {new_path}")
-            print(f"新的访问路径为: http://{cfg['host']}:{cfg['port']}/{new_path}/")
+            display_host = cfg['host']
+            if ":" in display_host:
+                display_host = f"[{display_host}]"
+            print(f"新的访问路径为: http://{display_host}:{cfg['port']}/{new_path}/")
             ask_restart()
             break
         elif key == '3' or key == 'q' or key == '\x03':
@@ -970,7 +1008,7 @@ while True:
     python3 -c "
 import json
 cfg = {
-    'host': '0.0.0.0',
+    'host': '::',
     'port': int('$UI_PORT'),
     'secret_path': '$SECRET_PATH',
     'username': '$UI_USERNAME',
@@ -1041,13 +1079,20 @@ echo -e "正在获取 VPS 公网 IP..."
 PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org || curl -s --max-time 3 https://ifconfig.me || curl -s --max-time 3 icanhazip.com || echo "您的服务器公网IP")
 echo -n "$PUBLIC_IP" > "${INSTALL_DIR}/vpngate_data/public_ip.txt"
 
+# Get VPS public IPv6
+echo -e "正在获取 VPS 公网 IPv6..."
+PUBLIC_IPV6=$(curl -6 -s --max-time 3 https://api.ipify.org || curl -6 -s --max-time 3 https://ifconfig.me || curl -6 -s --max-time 3 icanhazip.com || echo "")
+
 echo -e "\n${GREEN}==========================================================${PLAIN}"
 echo -e "${GREEN}             AimiliVPN 源码一键部署已完成！${PLAIN}"
 echo -e "${GREEN}==========================================================${PLAIN}"
 echo -e "  * 网页控制面板:  ${BLUE}http://${PUBLIC_IP}:${UI_PORT}/${SECRET_PATH}/${PLAIN}"
+if [ -n "$PUBLIC_IPV6" ]; then
+    echo -e "  * 网页控制面板(IPv6):  ${BLUE}http://[${PUBLIC_IPV6}]:${UI_PORT}/${SECRET_PATH}/${PLAIN}"
+fi
 echo -e "  * 网页管理账号:  ${YELLOW}${USERNAME}${PLAIN}"
 echo -e "  * 网页管理密码:  ${YELLOW}${PASSWORD}${PLAIN}"
-echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:7928/${PLAIN}"
+echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:7928/${PLAIN}  或  ${BLUE}http://[::1]:7928/${PLAIN}"
 echo -e " --------------------------------------------------------"
 echo -e "  * 快速状态指令:   ${YELLOW}ml status${PLAIN}  或  ${YELLOW}ml${PLAIN}"
 echo -e "  * 查看实时日志:   ${YELLOW}ml logs${PLAIN}"

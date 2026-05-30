@@ -194,7 +194,9 @@ def get_physical_interface() -> str | None:
 
 def tcp_latency_ms(host: str, port: int, dev: str | None = None) -> int:
     started = time.time()
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Auto-detect address family based on host address
+    af = socket.AF_INET6 if ":" in host else socket.AF_INET
+    s = socket.socket(af, socket.SOCK_STREAM)
     try:
         s.settimeout(5)
         if dev:
@@ -265,21 +267,29 @@ def ping_latency_ms(host: str, port: int, fallback_ping: int = 0) -> int:
 
 def check_and_fix_dns() -> None:
     """
-    Checks if DNS resolution is broken in WSL.
+    Checks if DNS resolution is broken.
     If names fail but direct IP connections work, appends public DNS nameservers to /etc/resolv.conf.
+    Supports both IPv4 and IPv6 network environments.
     """
     try:
-        socket.gethostbyname("www.vpngate.net")
+        socket.getaddrinfo("www.vpngate.net", 443)
         return
-    except socket.gaierror:
+    except (socket.gaierror, OSError):
         pass
 
     network_ok = False
-    for ip in ["8.8.8.8", "1.1.1.1"]:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Test IPv4 DNS servers first, then IPv6
+    dns_targets = [
+        ("8.8.8.8", 53, socket.AF_INET),
+        ("1.1.1.1", 53, socket.AF_INET),
+        ("2001:4860:4860::8888", 53, socket.AF_INET6),
+        ("2606:4700:4700::1111", 53, socket.AF_INET6),
+    ]
+    for ip, port, af in dns_targets:
+        s = socket.socket(af, socket.SOCK_DGRAM)
         try:
             s.settimeout(2)
-            s.connect((ip, 53))
+            s.connect((ip, port))
             network_ok = True
             break
         except Exception:
@@ -435,7 +445,7 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
     dns_ok = False
     for test_domain in ["api.ipify.org", "dns.google", "one.one.one.one"]:
         try:
-            socket.gethostbyname(test_domain)
+            socket.getaddrinfo(test_domain, 443)
             dns_ok = True
             break
         except Exception:
@@ -443,10 +453,12 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
 
     # 2. 检查是否能解析 API 域名
     api_dns_ok = False
-    api_ip = None
+    api_addr = None  # (af, ip) tuple
     try:
-        api_ip = socket.gethostbyname(domain)
-        api_dns_ok = True
+        results = socket.getaddrinfo(domain, port, 0, socket.SOCK_STREAM)
+        if results:
+            api_dns_ok = True
+            api_addr = (results[0][0], results[0][4][0])  # (address_family, ip)
     except Exception:
         pass
 
@@ -458,7 +470,8 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
 
     # 3. 检查 TCP 连接 API 域名
     api_conn_ok = False
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    api_af, api_ip = api_addr
+    s = socket.socket(api_af, socket.SOCK_STREAM)
     s.settimeout(4)
     try:
         s.connect((api_ip, port))
@@ -473,8 +486,15 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
 
     if not api_conn_ok:
         ext_conn_ok = False
-        for test_ip, test_port in [("8.8.8.8", 53), ("1.1.1.1", 53)]:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # Test both IPv4 and IPv6 external connectivity
+        ext_targets = [
+            ("8.8.8.8", 53, socket.AF_INET),
+            ("1.1.1.1", 53, socket.AF_INET),
+            ("2001:4860:4860::8888", 53, socket.AF_INET6),
+            ("2606:4700:4700::1111", 53, socket.AF_INET6),
+        ]
+        for test_ip, test_port, af in ext_targets:
+            s = socket.socket(af, socket.SOCK_STREAM)
             s.settimeout(3)
             try:
                 s.connect((test_ip, test_port))
@@ -490,7 +510,7 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
         if ext_conn_ok:
             return 1008, f"[ERR_API_IP_BLOCKED_OR_DOWN] 连接 API 服务器失败。原因: 外部网络连接通畅，但无法建立到 {domain} ({api_ip}:{port}) 的连接，可能是由于官方 IP 遭 GFW/防火墙 IP 阻断封锁或官方服务器宕机。"
         else:
-            return 1009, "[ERR_VPS_OUTBOUND_BLOCKED] VPS 完全断网。原因: 任何外部测试连接均失败，请检查 VPS 网卡和宿主机连接。"
+            return 1009, "[ERR_VPS_OUTBOUND_BLOCKED] VPS 完全断网。原因: 任何外部测试连接均失败（IPv4 和 IPv6 均不可达），请检查 VPS 网卡和宿主机连接。"
 
     return 1010, f"[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
 
@@ -524,13 +544,15 @@ def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
     return 2010, "[ERR_OVPN_UNKNOWN] OpenVPN 其他运行时异常。原因: 连接握手期间发生其他协议错误，详细信息请查看日志尾部。"
 
 
-def diagnose_local_obstructions(proxy_port: int = 7928) -> tuple[int, str] | None:
+def diagnose_local_obstructions(proxy_port: int = 7928, host: str = "127.0.0.1") -> tuple[int, str] | None:
     import sys
     # 1. 检查端口是否被占用
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    is_ipv6 = ":" in host or host == ""
+    af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    s = socket.socket(af, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        s.bind(("127.0.0.1", proxy_port))
+        s.bind((host, proxy_port))
     except OSError as e:
         if e.errno == 98 or e.errno == 10048 or "already in use" in str(e).lower():
             return 3005, f"[ERR_PORT_IN_USE] 本地代理端口 {proxy_port} 被占用。原因: 其他进程已抢占该端口，导致本系统代理网关启动失败。请运行 'lsof -i :{proxy_port}' 检查占用进程。"

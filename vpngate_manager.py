@@ -23,13 +23,56 @@ import concurrent.futures
 import sys
 import uuid
 
-# Force socket to resolve IPv4 only to avoid slow AAAA (IPv6) DNS resolution timeouts (e.g. in WSL)
+# Prefer IPv4 resolution to avoid slow AAAA DNS timeouts (e.g. in WSL),
+# but fall back to system default (IPv6) if IPv4 resolution fails.
+# This ensures pure-IPv6 VPS (with NAT64/clatd) can still function.
 _orig_getaddrinfo = socket.getaddrinfo
 def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     if family == 0:
-        family = socket.AF_INET
+        if isinstance(host, str) and ":" in host:
+            return _orig_getaddrinfo(host, port, socket.AF_INET6, type, proto, flags)
+        # Try IPv4 first for speed; fall back to system default (allows IPv6/NAT64)
+        try:
+            results = _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+            if results:
+                return results
+        except socket.gaierror:
+            pass
+        return _orig_getaddrinfo(host, port, 0, type, proto, flags)
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
 socket.getaddrinfo = _ipv4_getaddrinfo
+
+class DualStackHTTPServer(ThreadingHTTPServer):
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        host, port = server_address
+        if ":" in host or host == "":
+            self.address_family = socket.AF_INET6
+        else:
+            self.address_family = socket.AF_INET
+        
+        try:
+            super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+        except OSError as e:
+            if self.address_family == socket.AF_INET6:
+                fallback_host = "0.0.0.0" if host in ("::", "") else "127.0.0.1"
+                print(f"[警告] 绑定 Web 管理后台 IPv6 {host}:{port} 失败 ({e})，正在尝试回退至 IPv4 {fallback_host} ...", flush=True)
+                # 关闭第一次失败时可能已创建的 socket
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+                self.address_family = socket.AF_INET
+                super().__init__((fallback_host, port), RequestHandlerClass, bind_and_activate)
+            else:
+                raise e
+
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except OSError:
+                pass
+        super().server_bind()
 
 import vpn_utils
 import proxy_server
@@ -43,9 +86,9 @@ OPENVPN_TEST_TIMEOUT_SECONDS = int(os.environ.get("OPENVPN_TEST_TIMEOUT_SECONDS"
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
 OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
 OPENVPN_AUTH_PASS = os.environ.get("OPENVPN_AUTH_PASS", "vpn")
-LOCAL_PROXY_HOST = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
+LOCAL_PROXY_HOST = os.environ.get("LOCAL_PROXY_HOST", "::")
 LOCAL_PROXY_PORT = int(os.environ.get("LOCAL_PROXY_PORT", "7928"))
-UI_HOST = os.environ.get("UI_HOST", "0.0.0.0")
+UI_HOST = os.environ.get("UI_HOST", "::")
 UI_PORT = int(os.environ.get("UI_PORT", "8787"))
 INVALID_BACKOFF_SECONDS = int(os.environ.get("INVALID_BACKOFF_SECONDS", str(30 * 60)))
 
@@ -122,7 +165,7 @@ def load_ui_config() -> dict[str, Any]:
             "username": "",
             "secret_path": "EJsW2EeBo9lY",
             "password": "",
-            "host": "0.0.0.0",
+            "host": "::",
             "port": 8787
         }
         updated = False
@@ -214,7 +257,8 @@ def get_state() -> dict[str, Any]:
     state.setdefault("target_valid_nodes", TARGET_VALID_NODES)
     state.setdefault("fetch_interval_seconds", FETCH_INTERVAL_SECONDS)
     state.setdefault("check_interval_seconds", CHECK_INTERVAL_SECONDS)
-    state.setdefault("local_proxy", f"http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}")
+    _proxy_display = f"[{LOCAL_PROXY_HOST}]" if ":" in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST
+    state.setdefault("local_proxy", f"http://{_proxy_display}:{LOCAL_PROXY_PORT}")
     state.setdefault("last_fetch_status", "not_started")
     state.setdefault("last_check_message", "")
     state.setdefault("blacklisted_nodes", 0)
@@ -933,7 +977,8 @@ def connect_node(node_id: str) -> str:
         for item in nodes:
             item["active"] = item.get("id") == node_id
             if item["active"]:
-                item["probe_message"] = f"Active node. HTTP proxy: http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}"
+                _ph = f"[{LOCAL_PROXY_HOST}]" if ":" in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST
+                item["probe_message"] = f"Active node. HTTP proxy: http://{_ph}:{LOCAL_PROXY_PORT}"
         write_json(NODES_FILE, nodes)
         
         set_state(last_check_message="正在测试本地代理出站联通性与出口 IP...")
@@ -2281,7 +2326,7 @@ INDEX_HTML = r"""<!doctype html>
           <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="color: var(--primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071a10.5 10.5 0 0114.14 0M1.414 8.05a16 16 0 0121.172 0" /></svg>
         </div>
         <div>
-          <h3 style="margin: 0 0 4px 0; font-size: 16px; font-weight: 600; color: var(--text-primary);">本地代理出口检测 (Port 7928)</h3>
+          <h3 style="margin: 0 0 4px 0; font-size: 16px; font-weight: 600; color: var(--text-primary);">本地代理出口检测</h3>
           <p style="margin: 0; font-size: 13px; color: var(--text-secondary);">
             测试本地 HTTP/SOCKS5 代理是否成功通过当前 VPN 节点出站，并获取实际出口公网 IP 和延迟。
           </p>
@@ -2696,7 +2741,8 @@ function render(){
   
   const statusMessage = state.last_check_message || "";
   const activeNodeInfo = activeNode ? `<span class="badge available" style="margin-left:8px; padding:2px 8px;">${esc(translateCountry(activeNode.country))} (${activeNode.id})</span>` : `<span class="badge unavailable" style="margin-left:8px; padding:2px 8px;">无</span>`;
-  $("status").innerHTML=`<span class="status-dot"></span>HTTP 代理本地接口：http://127.0.0.1:7928 | 活动节点：${activeNodeInfo} | 状态：${statusMessage}`;
+  const localProxy = state.local_proxy || `http://127.0.0.1:${state.proxy_port || 7928}`;
+  $("status").innerHTML=`<span class="status-dot"></span>HTTP 代理本地接口：${localProxy} | 活动节点：${activeNodeInfo} | 状态：${statusMessage}`;
   
   // Update proxy test status card based on background checks
   const pBadge = $("proxy_status_badge");
@@ -3318,12 +3364,17 @@ setInterval(async () => {
 
 def check_proxy_health() -> dict[str, Any]:
     # 1. 检测代理服务端口是否在监听
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    is_ipv6 = ":" in LOCAL_PROXY_HOST
+    af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    s = socket.socket(af, socket.SOCK_STREAM)
     s.settimeout(1.5)
     try:
-        s.connect(("127.0.0.1", LOCAL_PROXY_PORT))
+        connect_host = LOCAL_PROXY_HOST
+        if connect_host in ("::", "0.0.0.0", ""):
+            connect_host = "::1" if is_ipv6 else "127.0.0.1"
+        s.connect((connect_host, LOCAL_PROXY_PORT))
     except Exception as e:
-        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT)
+        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
         diag_msg = diag[1] if diag else f"端口 {LOCAL_PROXY_PORT} 连接失败，原因: {e}"
         return {
             "ok": False,
@@ -3345,10 +3396,20 @@ def check_proxy_health() -> dict[str, Any]:
 
     # 3. 使用 curl 通过本地 SOCKS5 代理接口测试 IP 与实际延迟
     def _curl_check_ip(url: str) -> dict[str, Any] | None:
+        proxy_host = LOCAL_PROXY_HOST
+        if proxy_host == "::":
+            proxy_url = f"socks5h://[::1]:{LOCAL_PROXY_PORT}"
+        elif proxy_host == "0.0.0.0":
+            proxy_url = f"socks5h://127.0.0.1:{LOCAL_PROXY_PORT}"
+        elif ":" in proxy_host:
+            proxy_url = f"socks5h://[{proxy_host}]:{LOCAL_PROXY_PORT}"
+        else:
+            proxy_url = f"socks5h://{proxy_host}:{LOCAL_PROXY_PORT}"
+            
         cmd = [
-            "curl", "-4", "-s",
+            "curl", "-s",
             "-w", "\n%{time_total} %{http_code}",
-            "-x", f"socks5h://127.0.0.1:{LOCAL_PROXY_PORT}",
+            "-x", proxy_url,
             url,
             "--max-time", "5"
         ]
@@ -3376,7 +3437,7 @@ def check_proxy_health() -> dict[str, Any]:
         if result:
             return result
             
-        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT)
+        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
         if diag:
             return {"ok": False, "error": f"出口连接测试失败 | 本机诊断结果: {diag[1]}"}
             
@@ -3404,7 +3465,7 @@ def background_proxy_checker() -> None:
             else:
                 error_msg = res.get("error", "未知错误")
                 if active_openvpn_node_id:
-                    print(f"[警告] 7928 端口本地代理当前不可用！原因: {error_msg}", flush=True)
+                    print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
                     log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
                 set_state(
                     proxy_ok=False,
@@ -3840,7 +3901,7 @@ def main() -> None:
             "target_valid_nodes": TARGET_VALID_NODES,
             "fetch_interval_seconds": FETCH_INTERVAL_SECONDS,
             "check_interval_seconds": CHECK_INTERVAL_SECONDS,
-            "local_proxy": f"http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
+            "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
             "last_check_message": "服务已启动，正在初始化网络并获取候选 VPN 节点...",
@@ -3854,11 +3915,16 @@ def main() -> None:
     # Wait for the gateway to officially start
     print("[网关] 正在启动代理网关...", flush=True)
     gateway_ready = False
+    is_ipv6 = ":" in LOCAL_PROXY_HOST
+    af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
     for _ in range(30):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s = socket.socket(af, socket.SOCK_STREAM)
         try:
             s.settimeout(0.5)
-            s.connect((LOCAL_PROXY_HOST, LOCAL_PROXY_PORT))
+            connect_host = LOCAL_PROXY_HOST
+            if connect_host in ("::", "0.0.0.0", ""):
+                connect_host = "::1" if is_ipv6 else "127.0.0.1"
+            s.connect((connect_host, LOCAL_PROXY_PORT))
             gateway_ready = True
             break
         except Exception:
@@ -3884,7 +3950,7 @@ def main() -> None:
     
     print(f"UI: http://{ui_host}:{ui_port}/", flush=True)
     print(f"Proxy: http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}", flush=True)
-    ThreadingHTTPServer((ui_host, ui_port), Handler).serve_forever()
+    DualStackHTTPServer((ui_host, ui_port), Handler).serve_forever()
 
 if __name__ == "__main__":
     main()
