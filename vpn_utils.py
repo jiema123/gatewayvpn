@@ -420,3 +420,173 @@ def enrich_ip_info(nodes: list[dict[str, Any]]) -> None:
             node["location"] = cached.get("location", "")
             node["ip_type"] = cached.get("ip_type", "")
             node["quality"] = cached.get("quality", "")
+
+
+def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -> tuple[int, str]:
+    try:
+        parsed = urllib.parse.urlsplit(api_url)
+        domain = parsed.hostname or "www.vpngate.net"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except Exception:
+        domain = "www.vpngate.net"
+        port = 443
+
+    # 1. 检查本地 DNS 解析是否完全失效
+    dns_ok = False
+    for test_domain in ["api.ipify.org", "dns.google", "one.one.one.one"]:
+        try:
+            socket.gethostbyname(test_domain)
+            dns_ok = True
+            break
+        except Exception:
+            pass
+
+    # 2. 检查是否能解析 API 域名
+    api_dns_ok = False
+    api_ip = None
+    try:
+        api_ip = socket.gethostbyname(domain)
+        api_dns_ok = True
+    except Exception:
+        pass
+
+    if not api_dns_ok:
+        if not dns_ok:
+            return 1006, "[ERR_LOCAL_DNS_BROKEN] 本地 DNS 解析器完全失效。原因: 无法解析任何外部域名，请检查系统 DNS 配置(如 /etc/resolv.conf)及外网连接。"
+        else:
+            return 1007, f"[ERR_API_DOMAIN_BLOCKED] 解析 API 域名 {domain} 失败。原因: 其他外部域名解析正常，确认该官方 API 域名遭 DNS 污染或本地防火墙拦截。"
+
+    # 3. 检查 TCP 连接 API 域名
+    api_conn_ok = False
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(4)
+    try:
+        s.connect((api_ip, port))
+        api_conn_ok = True
+    except Exception:
+        pass
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+    if not api_conn_ok:
+        ext_conn_ok = False
+        for test_ip, test_port in [("8.8.8.8", 53), ("1.1.1.1", 53)]:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(3)
+            try:
+                s.connect((test_ip, test_port))
+                ext_conn_ok = True
+                break
+            except Exception:
+                pass
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        if ext_conn_ok:
+            return 1008, f"[ERR_API_IP_BLOCKED_OR_DOWN] 连接 API 服务器失败。原因: 外部网络连接通畅，但无法建立到 {domain} ({api_ip}:{port}) 的连接，可能是由于官方 IP 遭 GFW/防火墙 IP 阻断封锁或官方服务器宕机。"
+        else:
+            return 1009, "[ERR_VPS_OUTBOUND_BLOCKED] VPS 完全断网。原因: 任何外部测试连接均失败，请检查 VPS 网卡和宿主机连接。"
+
+    return 1010, f"[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
+
+
+def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
+    joined_log = "\n".join(log_tail).lower()
+    
+    if "command not found" in joined_log or "no such file or directory" in joined_log:
+        return 2001, "[ERR_OVPN_CMD_NOT_FOUND] 未找到 openvpn 命令。原因: 系统中未安装 OpenVPN 软件，或环境变量 PATH 不正确。"
+    
+    if "cannot allocate tun" in joined_log or "cannot open tun/tap dev" in joined_log or "cannot ioctl" in joined_log or "cannot allocate tun/tap dev" in joined_log:
+        return 2009, "[ERR_OVPN_TUN_NOT_AVAILABLE] 无法创建虚拟网卡 (TUN 设备)。原因: 缺少 tun 内核模块，或当前容器(如 LXC/OpenVZ/Docker)未被宿主机授予网卡创建权限。请在 VPS 面板中启用 TUN 或联系服务商。"
+        
+    if "auth_failed" in joined_log or "authentication failed" in joined_log:
+        return 2005, "[ERR_OVPN_AUTH_FAILED] OpenVPN 身份验证失败。原因: 节点配置的用户名密码不正确，或者该免费节点已失效/限制连接。"
+        
+    if "cannot resolve host address" in joined_log or "resolve: host name" in joined_log:
+        return 2003, "[ERR_OVPN_DNS_RESOLVE] 节点服务器域名解析失败。原因: 本地 DNS 解析异常，或者节点域名已失效。"
+        
+    if "tls error: tls key negotiation failed" in joined_log or "tls error: tls handshake failed" in joined_log:
+        return 2006, "[ERR_OVPN_TLS_BLOCKED] TLS 握手超时/失败。原因: 可能是由于物理链路极差导致握手包丢失，或者受 VPS 防火墙规则/网络监管(如 GFW)深度包检测拦截了 OpenVPN 协议流量。"
+        
+    if "connection timed out" in joined_log or "timeout" in joined_log:
+        return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接超时。原因: 远程节点已关机、VPS 本身出站流量被本地防火墙拦截，或者目的 IP:端口遭 ISP/GFW 屏蔽拦截。"
+    if "connection refused" in joined_log:
+        return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接被拒绝。原因: 目的服务器未在指定端口监听，或者主动拒绝了连接。"
+        
+    if "options error" in joined_log:
+        return 2007, "[ERR_OVPN_ROUTE_NOPULL] 获取/解析 PUSH 配置参数冲突。原因: 某些推送选项在当前版本的客户端或配置环境中不可用。"
+        
+    return 2010, "[ERR_OVPN_UNKNOWN] OpenVPN 其他运行时异常。原因: 连接握手期间发生其他协议错误，详细信息请查看日志尾部。"
+
+
+def diagnose_local_obstructions(proxy_port: int = 7928) -> tuple[int, str] | None:
+    import sys
+    # 1. 检查端口是否被占用
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("127.0.0.1", proxy_port))
+    except OSError as e:
+        if e.errno == 98 or e.errno == 10048 or "already in use" in str(e).lower():
+            return 3005, f"[ERR_PORT_IN_USE] 本地代理端口 {proxy_port} 被占用。原因: 其他进程已抢占该端口，导致本系统代理网关启动失败。请运行 'lsof -i :{proxy_port}' 检查占用进程。"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+    if sys.platform.startswith("linux"):
+        # 2. 检查 IPv4 转发是否开启
+        ip_forward_path = Path("/proc/sys/net/ipv4/ip_forward")
+        if ip_forward_path.exists():
+            try:
+                val = ip_forward_path.read_text(encoding="utf-8").strip()
+                if val == "0":
+                    return 3001, "[ERR_ROUTE_FORWARD_DISABLED] 系统未开启 IPv4 流量转发。原因: /proc/sys/net/ipv4/ip_forward 值为 0，会导致 VPN 隧道内的流量无法进行正常的网络转发。"
+            except Exception:
+                pass
+
+        # 3. 检查本机防火墙策略
+        # 检查 UFW
+        try:
+            res = subprocess.run(["ufw", "status"], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0 and "Status: active" in res.stdout:
+                if str(proxy_port) not in res.stdout:
+                    return 3007, f"[ERR_FIREWALL_BLOCKING_FORWARD] 本机 UFW 防火墙处于激活状态，但未在规则中允许代理端口 {proxy_port}。这可能会阻断客户端的连接。"
+        except Exception:
+            pass
+
+        # 检查 Firewalld
+        try:
+            res = subprocess.run(["systemctl", "is-active", "firewalld"], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0 and res.stdout.strip() == "active":
+                return 3007, "[ERR_FIREWALL_BLOCKING_FORWARD] 本机 Firewalld 防火墙正在运行。请确保您已将代理端口及 VPN 网卡(tun0)加入信任区域以避免流量被拦截。"
+        except Exception:
+            pass
+
+        # 检查 iptables 默认策略
+        try:
+            res = subprocess.run(["iptables", "-S"], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0:
+                lines = res.stdout.splitlines()
+                has_output_drop = False
+                has_forward_drop = False
+                for line in lines:
+                    if line.startswith("-P OUTPUT DROP"):
+                        has_output_drop = True
+                    elif line.startswith("-P FORWARD DROP"):
+                        has_forward_drop = True
+                
+                if has_output_drop:
+                    return 3007, "[ERR_FIREWALL_BLOCKING_FORWARD] 本机 iptables OUTPUT 默认策略被设为 DROP。这会导致 VPS 出站数据包被静默丢弃，从而彻底阻碍网关运行。"
+                if has_forward_drop:
+                    return 3007, "[ERR_FIREWALL_BLOCKING_FORWARD] 本机 iptables FORWARD 默认策略被设为 DROP。且未配置相应的转发规则，这通常会拦截 VPN 网卡的流量穿透。"
+        except Exception:
+            pass
+
+    return None

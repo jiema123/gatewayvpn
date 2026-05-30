@@ -436,7 +436,8 @@ def print_status():
             print_line(format_line("出口 IP (出站)", proxy_ip))
             print_line(format_line("本地代理延迟", f"{proxy_latency} ms" if proxy_latency else "检测中..."))
         else:
-            print_line(format_line("出口 IP (出站)", f"{red}[检测中/未就绪]{reset}"))
+            proxy_err = state.get("proxy_error") or "检测中/未就绪"
+            print_line(format_line("出口 IP (出站)", f"{red}[不可用 - {proxy_err}]{reset}"))
     else:
         print_line(format_line("节点状态", "无活动连接"))
     print_line()

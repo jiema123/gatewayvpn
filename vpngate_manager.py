@@ -333,8 +333,16 @@ def fetch_candidates() -> list[dict[str, Any]]:
             print(f"[fetch_candidates] Fetch {i+1} failed: {e}", flush=True)
             log_to_json("WARNING", "Main", f"第 {i+1} 次拉取 API 节点失败: {e}")
             if i == max_attempts - 1 and not candidates:
-                log_to_json("ERROR", "Main", f"获取官方 API 节点失败: {e}")
-                raise
+                err_code, diag_msg = vpn_utils.diagnose_api_failure(API_URL)
+                full_err_msg = f"获取官方 API 节点失败: {e} | 诊断结果: {diag_msg}"
+                print(f"[错误代码 {err_code}] {full_err_msg}", flush=True)
+                log_to_json("ERROR", "Main", f"[错误代码 {err_code}] {full_err_msg}")
+                set_state(
+                    last_fetch_status="error",
+                    last_fetch_error_code=err_code,
+                    last_fetch_message=diag_msg
+                )
+                raise RuntimeError(diag_msg) from e
                 
     set_state(
         last_fetch_at=time.time(),
@@ -468,9 +476,9 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
             cwd=str(ROOT_DIR),
         )
     except FileNotFoundError:
-        return False, "openvpn command not found", None
+        return False, "[错误代码 2001] [ERR_OVPN_CMD_NOT_FOUND] 未找到 openvpn 命令。原因: 系统未安装 openvpn，或 PATH 环境变量不正确。", None
     except OSError as exc:
-        return False, f"openvpn start failed: {exc}", None
+        return False, f"[错误代码 2002] [ERR_OVPN_START_FAILED] openvpn 启动失败: {exc}。原因: 系统权限不足或配置冲突。", None
 
     lines: queue.Queue[str | None] = queue.Queue()
     startup_done = [False]
@@ -521,8 +529,9 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     else:
         message = f"OpenVPN timeout after {limit}s."
 
-    if not ok and tail:
-        message = tail[-1][-220:]
+    if not ok:
+        err_code, diag_msg = vpn_utils.diagnose_openvpn_failure(tail)
+        message = f"[错误代码 {err_code}] {diag_msg} (原始日志尾部: {tail[-1][-100:] if tail else '无'})"
     startup_done[0] = True
     if not keep_alive or not ok:
         stop_process(process)
@@ -975,7 +984,11 @@ def maintain_valid_nodes(force: bool = False) -> str:
             candidates = fetch_candidates()
         except Exception as exc:
             vpn_utils.check_and_fix_dns()
-            set_state(last_fetch_at=time.time(), last_fetch_status="error", last_fetch_message=str(exc))
+            diag_msg = str(exc)
+            if not any(token in diag_msg for token in ["[ERR_", "错误代码"]):
+                err_code, raw_diag = vpn_utils.diagnose_api_failure(API_URL)
+                diag_msg = f"[错误代码 {err_code}] 获取节点失败: {exc} | 诊断结果: {raw_diag}"
+            set_state(last_fetch_at=time.time(), last_fetch_status="error", last_fetch_message=diag_msg)
             candidates = []
 
         if not candidates:
@@ -2709,11 +2722,7 @@ function render(){
         pBadge.className = "badge unavailable";
         pBadge.textContent = "不可用";
         pIpVal.textContent = "-";
-        if (state.last_check_message) {
-          pLatVal.innerHTML = `<span style="color: var(--text-secondary); font-size: 12px;">${esc(state.last_check_message)}</span>`;
-        } else {
-          pLatVal.innerHTML = `<span class="latency-val latency-poor" style="margin-left:8px; font-size:11px;" title="${esc(state.proxy_error)}">${esc(state.proxy_error || "连接失败")}</span>`;
-        }
+        pLatVal.innerHTML = `<span class="latency-val latency-poor" style="margin-left:8px; font-size:11px; max-width: 450px; display: inline-block; white-space: normal; line-height: 1.4; text-align: left;" title="${esc(state.proxy_error)}">${esc(state.proxy_error || "连接失败")}</span>`;
       }
     } else {
       pBadge.className = "badge not_checked";
@@ -3303,9 +3312,11 @@ def check_proxy_health() -> dict[str, Any]:
     try:
         s.connect(("127.0.0.1", LOCAL_PROXY_PORT))
     except Exception as e:
+        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT)
+        diag_msg = diag[1] if diag else f"端口 {LOCAL_PROXY_PORT} 连接失败，原因: {e}"
         return {
             "ok": False,
-            "error": f"代理服务未运行 (端口 {LOCAL_PROXY_PORT} 连接失败，原因: {e})"
+            "error": f"代理服务未运行 ({diag_msg})"
         }
     finally:
         try:
@@ -3318,7 +3329,7 @@ def check_proxy_health() -> dict[str, Any]:
     if sys.platform.startswith("linux") and not tun_path.exists():
         return {
             "ok": False,
-            "error": "VPN 虚拟网卡 (tun0) 未启用，请确保当前已成功连接 VPN 节点"
+            "error": "[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 (tun0) 未启用，请确保当前已成功连接 VPN 节点"
         }
 
     # 3. 使用 curl 通过本地 SOCKS5 代理接口测试 IP 与实际延迟
@@ -3353,7 +3364,12 @@ def check_proxy_health() -> dict[str, Any]:
         result = _curl_check_ip("http://api.ipify.org")
         if result:
             return result
-        return {"ok": False, "error": "出口连接测试失败 (ip.sb 和 api.ipify.org 均无法连通)"}
+            
+        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT)
+        if diag:
+            return {"ok": False, "error": f"出口连接测试失败 | 本机诊断结果: {diag[1]}"}
+            
+        return {"ok": False, "error": "出口连接测试失败 (ip.sb 和 api.ipify.org 均无法连通，可能是节点已失效或 VPS 防火墙限制了 UDP/TCP 出站端口)"}
     except Exception as e:
         return {"ok": False, "error": f"出口连接测试异常: {e}"}
 
