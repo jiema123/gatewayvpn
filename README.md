@@ -116,6 +116,17 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ba
 
 ---
 
+### 🎁 捐赠支持项目开发
+
+如果您觉得这个项目对您有所帮助，欢迎捐赠支持我们的后续开发与维护：
+
+* **BNB (BSC / BEP20)**: `0xB6d78c42CEB0687A31B8cfEBE4b51b6eB8953C17`
+* **TRX (TRC20)**: `TSdzCW6JvsrqcppodYjhSrku4mYmDJ9pxf`
+
+感谢您的慷慨与支持！❤️
+
+---
+
 <a name="english"></a>
 ## English
 
@@ -198,3 +209,14 @@ To prevent unauthorized scanning and abuse of the proxy port on the public inter
 #### 3. "API Domain Blocked" / Candidate nodes pool is empty (0 nodes)
 * **Reason**: The official VPNGate domain is blocked or DNS resolution failed on your VPS.
 * **Solution**: Add an HTTP/SOCKS5 upstream proxy in the settings panel (Admin -> Proxy Settings), or configure public DNS in `/etc/resolv.conf` (e.g., `nameserver 8.8.8.8`).
+
+---
+
+### 🎁 Donation Support
+
+If you find this project helpful, you can support its development and maintenance via donation:
+
+* **BNB (BSC / BEP20)**: `0xB6d78c42CEB0687A31B8cfEBE4b51b6eB8953C17`
+* **TRX (TRC20)**: `TSdzCW6JvsrqcppodYjhSrku4mYmDJ9pxf`
+
+Thank you for your generosity and support! ❤️
