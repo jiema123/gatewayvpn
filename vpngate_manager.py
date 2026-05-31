@@ -199,6 +199,18 @@ def load_ui_config() -> dict[str, Any]:
                 
         return config
 
+# 初始化时优先从 ui_auth.json 加载保存的代理出站端口和网页端口配置以覆盖环境变量
+try:
+    _init_cfg = load_ui_config()
+    if "proxy_port" in _init_cfg:
+        LOCAL_PROXY_PORT = int(_init_cfg["proxy_port"])
+    if "port" in _init_cfg:
+        UI_PORT = int(_init_cfg["port"])
+    if "host" in _init_cfg:
+        UI_HOST = _init_cfg["host"]
+except Exception:
+    pass
+
 def get_session_token(password: str, username: str = "admin") -> str:
     salt = "aimilivpn_secure_salt_2026"
     return hashlib.sha256((username + ":" + password + salt).encode("utf-8")).hexdigest()
