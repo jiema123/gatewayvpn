@@ -3077,9 +3077,9 @@ function render(){
 
   const shown = getFilteredNodes();
   
-  $("total").textContent=nodes.length; 
-  $("target").textContent=state.target_valid_nodes||3;
-  $("active").textContent=activeNode?1:0; 
+  if ($("total")) $("total").textContent = nodes.length; 
+  if ($("target")) $("target").textContent = state.target_valid_nodes || 3;
+  if ($("active")) $("active").textContent = activeNode ? 1 : 0; 
   
   const statusMessage = state.last_check_message || "";
   const activeNodeInfo = activeNode ? `<span class="badge available" style="margin-left:8px; padding:2px 8px;">${esc(translateCountry(activeNode.country))} (${activeNode.id})</span>` : `<span class="badge unavailable" style="margin-left:8px; padding:2px 8px;">无</span>`;
