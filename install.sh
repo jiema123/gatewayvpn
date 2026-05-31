@@ -82,29 +82,15 @@ fi
 
 # 4. Clone or pull the repository
 INSTALL_DIR="/opt/aimilivpn"
-# 默认部署分支，生产正式版设为 main
+# 默认部署分支（在 bate 分支设为 bate；在 main 分支设为 main）
 DEFAULT_DEPLOY_BRANCH="main"
-
-# 优先获取外部传入的参数作为目标分支，例如 bash install.sh bate
-CMD_BRANCH="$1"
 
 # 自动检测本地已安装版本当前所在的分支
 CURRENT_BRANCH=""
 if [ -d "${INSTALL_DIR}/.git" ]; then
     CURRENT_BRANCH=$(cd "${INSTALL_DIR}" && git rev-parse --abbrev-ref HEAD 2>/dev/null)
 fi
-
-# 确立部署分支优先级：
-# 1. 命令行传入的参数 (如 $1 = main/bate)
-# 2. 已安装则使用当前分支 CURRENT_BRANCH
-# 3. 默认兜底使用 DEFAULT_DEPLOY_BRANCH (即 main)
-if [ -n "$CMD_BRANCH" ]; then
-    DEPLOY_BRANCH="$CMD_BRANCH"
-elif [ -n "$CURRENT_BRANCH" ]; then
-    DEPLOY_BRANCH="$CURRENT_BRANCH"
-else
-    DEPLOY_BRANCH="$DEFAULT_DEPLOY_BRANCH"
-fi
+DEPLOY_BRANCH="${CURRENT_BRANCH:-$DEFAULT_DEPLOY_BRANCH}"
 
 echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR} (目标分支: ${DEPLOY_BRANCH})...${PLAIN}"
 if [ -f "${INSTALL_DIR}/.local_dev" ]; then

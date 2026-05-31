@@ -19,16 +19,16 @@ AimiliVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN
 
 ### 🚀 一键极速部署 (支持 Debian/Ubuntu/CentOS/Alpine 等 Linux 系统)
 
-在您的 Linux VPS 上以 root 用户执行以下对应命令（推荐显式传入分支参数）：
+在您的 Linux VPS 上以 root 用户执行以下对应命令：
 
 #### 🌟 正式稳定版本 (main 分支)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh) main
+bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
 ```
 
 #### 🧪 测试开发版本 (bate 分支)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/bate/install.sh) bate
+bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/bate/install.sh)
 ```
 
 > 💡 **小贴士**：部署完成后，终端会输出管理网页的专属链接（含随机安全后缀，如 `http://your_vps_ip:8787/u71e9IXp4TPx`）。在终端中输入 `ml` 命令可以随时调出交互式命令行管理菜单。
@@ -50,16 +50,28 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ba
    - **固定国家地区**：只选择指定国家（如日本 JP、韩国 KR、美国 US）的最佳节点。
    - **固定 IP 节点**：始终锁定连接到这一个特定节点。
 
-#### 第三步：配置客户端代理 (核心步骤)
-AimiliVPN 内置的代理服务器在单一端口 **`7928`** 同时提供 **SOCKS5** 和 **HTTP** 双协议自适应服务。您只需要将客户端的代理指向：`您的VPS公网IP:7928`。
+#### 第三步：使用本机代理 (核心步骤)
+为了防止代理端口暴露至公网被恶意扫描和滥用，AimiliVPN 的双效代理服务（默认端口 **`7928`**，自适应支持 SOCKS5 和 HTTP 协议）**默认仅绑定在本地回环地址（`127.0.0.1`）**，只接收 VPS 本机上的流量，不对外机提供代理。
 
-* **💻 电脑端 (以 v2rayN / Clash / browser 插件为例)**:
-  - **v2rayN**: 点击“服务器” -> “添加Socks服务器”，服务器地址填 `VPS_IP`，端口填 `7928`。
-  - **Clash (YAML配置)**: 添加一个类型为 `socks5` 的 proxy，例如：
-    `{ name: "AimiliVPN", type: socks5, server: VPS_IP, port: 7928 }`
-  - **SwitchyOmega (浏览器扩展)**: 新建情景模式 -> 选择代理协议为 `SOCKS5` (或 `HTTP`)，代理服务器填 `VPS_IP`，端口填 `7928`。
-* **📱 手机端 (以 Shadowrocket 小火箭为例)**:
-  - 点击右上角 `+` 号添加节点，类型选择 `SOCKS5` (或 `HTTP`)，服务器填 `VPS_IP`，端口填 `7928` 即可。
+* **🐍 Python 脚本中使用代理**:
+  ```python
+  import requests
+  proxies = {
+      "http": "http://127.0.0.1:7928",
+      "https": "http://127.0.0.1:7928",
+  }
+  response = requests.get("https://www.google.com", proxies=proxies)
+  ```
+* **🐚 Shell 终端环境中使用代理**:
+  在命令行执行以下命令，可以让当前终端的后续命令（如 `curl`、`wget` 等）走代理出口：
+  ```bash
+  export http_proxy="http://127.0.0.1:7928"
+  export https_proxy="http://127.0.0.1:7928"
+  ```
+* **⚙️ 本地其他服务配置**:
+  将本机的其他代理工具、爬虫框架或服务的出战代理设置为 `127.0.0.1:7928`。
+
+> 💡 **小贴士**：如果您确实需要对公网其他设备开放此代理端口，可以通过设置环境变量 `export LOCAL_PROXY_HOST="::"` 重新启动服务以允许公网接入。
 
 ---
 
@@ -123,12 +135,12 @@ Run the corresponding command on your Linux VPS as root:
 
 #### 🌟 Stable Release (main branch)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh) main
+bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
 ```
 
 #### 🧪 Beta / Development (bate branch)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/bate/install.sh) bate
+bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/bate/install.sh)
 ```
 
 > 💡 **Quick Note**: Once installed, copy the printed URL from the terminal to access the Web UI. Type the `ml` command in the terminal to summon the interactive CLI management console.
@@ -145,14 +157,27 @@ Open your browser and navigate to the printed URL (e.g. `http://your_vps_ip:8787
 2. Under "Admin", you can trigger node fetching. The backend concurrently tests official VPNGate nodes and ranks them by latency.
 3. Switch routes mode (Smart Auto, Specific Region, or Specific Server Node) according to your needs.
 
-#### Step 3: Configure Proxy Clients
-The gateway runs a dual SOCKS5/HTTP compatible proxy server on port **`7928`**.
-* **💻 PC (Clash / v2rayN / browser proxy plugins)**:
-  - **SOCKS5/HTTP Proxy Server**: `your_vps_ip`
-  - **Port**: `7928`
-* **📱 Mobile (Shadowrocket / v2rayNG)**:
-  - Add a **Socks5** (or HTTP) node.
-  - Set host to your VPS public IP, port to `7928`.
+#### Step 3: Use Localhost Proxy (Core Step)
+To prevent unauthorized scanning and abuse of the proxy port on the public internet, the built-in HTTP/SOCKS5 proxy server (default port **`7928`**) **binds to localhost (`127.0.0.1`) by default**. It is designed to route traffic generated locally on the VPS, rather than acting as a public proxy server.
+
+* **🐍 Proxy in Python**:
+  ```python
+  import requests
+  proxies = {
+      "http": "http://127.0.0.1:7928",
+      "https": "http://127.0.0.1:7928",
+  }
+  response = requests.get("https://www.google.com", proxies=proxies)
+  ```
+* **🐚 Proxy in Shell terminal**:
+  ```bash
+  export http_proxy="http://127.0.0.1:7928"
+  export https_proxy="http://127.0.0.1:7928"
+  ```
+* **⚙️ Other local services**:
+  Configure your scrapers, frameworks, or utility tools on this VPS to send traffic via `127.0.0.1:7928`.
+
+> 💡 **Quick Note**: If you really need to open this proxy port to the public internet, you can set the environment variable `export LOCAL_PROXY_HOST="::"` before running the manager.
 
 ---
 
