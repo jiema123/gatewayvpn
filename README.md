@@ -17,6 +17,10 @@ GateWayVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VP
 
 ---
 
+### 演示效果
+
+<video src="https://share.21588.org/-PR3hhSDeRv/gatewayvpn-test.mp4" controls width="800"></video>
+
 ### 🚀 一键极速部署 (支持 Debian/Ubuntu/CentOS/Alpine Linux 与 macOS)
 
 在 Linux VPS 上以 root 用户执行；macOS 可直接执行，脚本会在需要写入系统服务时请求 sudo 权限：
@@ -137,8 +141,7 @@ sudo python3 vpngate_manager.py
 
 如果您觉得这个项目对您有所帮助，欢迎捐赠支持我们的后续开发与维护：
 
-* **BNB (BSC / BEP20)**: `0xB6d78c42CEB0687A31B8cfEBE4b51b6eB8953C17`
-* **TRX (TRC20)**: `TSdzCW6JvsrqcppodYjhSrku4mYmDJ9pxf`
+* **BNB (BSC / BEP20)**: `0xC6F17d84f1458C7C7B24126D3DC0da49f8540fd9`
 
 感谢您的慷慨与支持！❤️
 
@@ -151,9 +154,6 @@ GateWayVPN is a high-performance, zero-dependency VPN proxy gateway built entire
 
 ### 📢 Community & Feedback
 - **Telegram Group**: [Join the discussion](https://t.me/+dVMJYMHj5O1jM2Q9)
-- **Discussion Forum**: [339936.xyz](https://339936.xyz)
-- **Video Tutorial**: [YouTube Guide](https://www.youtube.com/watch?v=s-ATfXR8BpI)
-- **Email Contact**: yaohunse7@gmail.com
 
 ---
 
@@ -233,7 +233,6 @@ To prevent unauthorized scanning and abuse of the proxy port on the public inter
 
 If you find this project helpful, you can support its development and maintenance via donation:
 
-* **BNB (BSC / BEP20)**: `0xB6d78c42CEB0687A31B8cfEBE4b51b6eB8953C17`
-* **TRX (TRC20)**: `TSdzCW6JvsrqcppodYjhSrku4mYmDJ9pxf`
+* **BNB (BSC / BEP20)**: `0xC6F17d84f1458C7C7B24126D3DC0da49f8540fd9`
 
 Thank you for your generosity and support! ❤️
