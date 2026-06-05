@@ -15,7 +15,7 @@ GateWayVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VP
 ---
 
 ### 演示效果
-![演示效果](generated-images/gateway-test.gif)
+![点我查看演示效果](https://share.21588.org/-PR3hhSDeRv/gatewayvpn-test.mp4)
 
 ### 原理
 ![原理](generated-images/gatewayvpn-system-implementation.png)
