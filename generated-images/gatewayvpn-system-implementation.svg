@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024" viewBox="0 0 1536 1024">
+  <defs>
+    <style>
+      .bg { fill: #f6fbff; }
+      .title { font: 800 44px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #12304a; }
+      .subtitle { font: 500 20px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #60758a; }
+      .lane-title { font: 800 25px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; }
+      .box-title { font: 800 23px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #12304a; }
+      .box-text { font: 500 17px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #5f7184; }
+      .small { font: 700 15px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #6a7d90; }
+      .note { font: 700 19px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: #244057; }
+      .code { font: 700 18px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #28445d; }
+      .blue { fill: #eaf4ff; stroke: #2b7fff; }
+      .green { fill: #eafaf2; stroke: #10a978; }
+      .orange { fill: #fff4e2; stroke: #f59e0b; }
+      .gray { fill: #ffffff; stroke: #b8c7d5; }
+      .lane-blue { fill: #dff0ff; }
+      .lane-green { fill: #dff8ed; }
+      .lane-orange { fill: #fff0d3; }
+      .arrow-blue { stroke: #2b7fff; }
+      .arrow-green { stroke: #10a978; }
+      .arrow-orange { stroke: #f59e0b; }
+      .muted-line { stroke: #d8e6f1; }
+    </style>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#2b7fff"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#10a978"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#f59e0b"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#17405f" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect class="bg" width="1536" height="1024"/>
+  <path d="M0 0 H1536 V180 C1280 115 1060 180 825 124 C570 62 335 88 0 160 Z" fill="#eaf6ff"/>
+  <path d="M0 834 C240 760 435 870 650 820 C920 758 1110 790 1536 718 V1024 H0 Z" fill="#edf8f4"/>
+
+  <text class="title" x="768" y="72" text-anchor="middle">GateWayVPN 系统实现原理图</text>
+  <text class="subtitle" x="768" y="110" text-anchor="middle">纯 Python 管理器 + 本地双协议代理 + OpenVPN 隧道网卡绑定</text>
+
+  <rect x="72" y="150" width="124" height="190" rx="18" class="lane-blue"/>
+  <text class="lane-title" x="134" y="214" text-anchor="middle" fill="#1456b8">控制面</text>
+  <text class="small" x="134" y="248" text-anchor="middle">Web / API</text>
+  <text class="small" x="134" y="274" text-anchor="middle">节点池调度</text>
+
+  <rect x="226" y="152" width="238" height="184" rx="18" class="blue" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="345" y="198" text-anchor="middle">Web 管理后台</text>
+  <text class="box-text" x="345" y="232" text-anchor="middle">8787 端口</text>
+  <text class="box-text" x="345" y="260" text-anchor="middle">登录 / 安全后缀</text>
+  <text class="box-text" x="345" y="288" text-anchor="middle">状态 / 日志 / API</text>
+
+  <rect x="548" y="152" width="260" height="184" rx="18" class="blue" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="678" y="198" text-anchor="middle">节点池</text>
+  <text class="box-text" x="678" y="232" text-anchor="middle">拉取 VPNGate API</text>
+  <text class="box-text" x="678" y="260" text-anchor="middle">解析 CSV</text>
+  <text class="box-text" x="678" y="288" text-anchor="middle">解码 .ovpn 配置</text>
+
+  <rect x="896" y="152" width="290" height="184" rx="18" class="blue" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="1041" y="198" text-anchor="middle">并发测速</text>
+  <text class="box-text" x="1041" y="232" text-anchor="middle">临时 tun2..tun99</text>
+  <text class="box-text" x="1041" y="260" text-anchor="middle">route-nopull 测连接</text>
+  <text class="box-text" x="1041" y="288" text-anchor="middle">按延迟排序可用节点</text>
+
+  <rect x="1262" y="152" width="202" height="184" rx="18" class="gray" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="1363" y="198" text-anchor="middle">数据文件</text>
+  <text class="code" x="1363" y="235" text-anchor="middle">nodes.json</text>
+  <text class="code" x="1363" y="265" text-anchor="middle">configs/*.ovpn</text>
+  <text class="code" x="1363" y="295" text-anchor="middle">state.json</text>
+
+  <line x1="472" y1="244" x2="536" y2="244" stroke-width="6" class="arrow-blue" marker-end="url(#arrowBlue)"/>
+  <line x1="816" y1="244" x2="884" y2="244" stroke-width="6" class="arrow-blue" marker-end="url(#arrowBlue)"/>
+  <line x1="1194" y1="244" x2="1250" y2="244" stroke-width="6" class="arrow-blue" marker-end="url(#arrowBlue)"/>
+
+  <rect x="72" y="404" width="124" height="198" rx="18" class="lane-blue"/>
+  <text class="lane-title" x="134" y="468" text-anchor="middle" fill="#1456b8">连接面</text>
+  <text class="small" x="134" y="502" text-anchor="middle">OpenVPN</text>
+  <text class="small" x="134" y="528" text-anchor="middle">隧道接口</text>
+
+  <rect x="226" y="404" width="266" height="198" rx="18" class="blue" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="359" y="452" text-anchor="middle">选择节点</text>
+  <text class="box-text" x="359" y="486" text-anchor="middle">写入选中 .ovpn</text>
+  <text class="box-text" x="359" y="514" text-anchor="middle">启动 openvpn 子进程</text>
+  <text class="box-text" x="359" y="542" text-anchor="middle">保持 keep-alive</text>
+
+  <rect x="576" y="404" width="294" height="198" rx="18" class="blue" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="723" y="452" text-anchor="middle">隧道建立</text>
+  <text class="box-text" x="723" y="486" text-anchor="middle">route-nopull</text>
+  <text class="box-text" x="723" y="514" text-anchor="middle">不接管全局默认路由</text>
+  <text class="box-text" x="723" y="542" text-anchor="middle">hook 记录 tun/utun</text>
+
+  <rect x="952" y="404" width="296" height="198" rx="18" class="blue" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="1100" y="452" text-anchor="middle">策略路由辅助</text>
+  <text class="box-text" x="1100" y="486" text-anchor="middle">Linux table 100 + oif</text>
+  <text class="box-text" x="1100" y="514" text-anchor="middle">rp_filter 设为 loose</text>
+  <text class="box-text" x="1100" y="542" text-anchor="middle">macOS scoped route</text>
+
+  <rect x="1296" y="410" width="168" height="186" rx="18" class="orange" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="1380" y="456" text-anchor="middle">守护线程</text>
+  <text class="box-text" x="1380" y="490" text-anchor="middle">拉取测速</text>
+  <text class="box-text" x="1380" y="518" text-anchor="middle">出口检测</text>
+  <text class="box-text" x="1380" y="546" text-anchor="middle">延迟刷新</text>
+  <text class="box-text" x="1380" y="574" text-anchor="middle">断线切换</text>
+
+  <line x1="500" y1="503" x2="564" y2="503" stroke-width="6" class="arrow-blue" marker-end="url(#arrowBlue)"/>
+  <line x1="880" y1="503" x2="940" y2="503" stroke-width="6" class="arrow-blue" marker-end="url(#arrowBlue)"/>
+  <path d="M1210 394 C1248 354 1316 348 1364 390" fill="none" stroke-width="5" class="arrow-orange" marker-end="url(#arrowOrange)"/>
+
+  <rect x="72" y="666" width="124" height="190" rx="18" class="lane-green"/>
+  <text class="lane-title" x="134" y="730" text-anchor="middle" fill="#087451">转发面</text>
+  <text class="small" x="134" y="764" text-anchor="middle">业务流量</text>
+  <text class="small" x="134" y="790" text-anchor="middle">本地代理</text>
+
+  <rect x="226" y="666" width="236" height="190" rx="18" class="green" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="344" y="714" text-anchor="middle">本机应用</text>
+  <text class="box-text" x="344" y="748" text-anchor="middle">浏览器 / 脚本</text>
+  <text class="box-text" x="344" y="776" text-anchor="middle">curl / requests</text>
+  <text class="code" x="344" y="812" text-anchor="middle">127.0.0.1:7928</text>
+
+  <rect x="542" y="666" width="270" height="190" rx="18" class="green" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="677" y="714" text-anchor="middle">双协议代理</text>
+  <text class="box-text" x="677" y="748" text-anchor="middle">SOCKS5</text>
+  <text class="box-text" x="677" y="776" text-anchor="middle">HTTP CONNECT</text>
+  <text class="box-text" x="677" y="804" text-anchor="middle">普通 HTTP</text>
+
+  <rect x="890" y="666" width="294" height="190" rx="18" class="green" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="1037" y="714" text-anchor="middle">绑定隧道出站</text>
+  <text class="box-text" x="1037" y="748" text-anchor="middle">DNS 可经隧道解析</text>
+  <text class="box-text" x="1037" y="776" text-anchor="middle">socket 绑定 tun/utun</text>
+  <text class="box-text" x="1037" y="804" text-anchor="middle">Linux SO_BINDTODEVICE</text>
+
+  <rect x="1260" y="666" width="204" height="190" rx="18" class="green" stroke-width="3" filter="url(#shadow)"/>
+  <text class="box-title" x="1362" y="714" text-anchor="middle">外网访问</text>
+  <text class="box-text" x="1362" y="748" text-anchor="middle">VPNGate 节点</text>
+  <text class="box-text" x="1362" y="776" text-anchor="middle">作为出口 IP</text>
+  <text class="box-text" x="1362" y="804" text-anchor="middle">访问目标网站</text>
+
+  <line x1="470" y1="761" x2="530" y2="761" stroke-width="6" class="arrow-green" marker-end="url(#arrowGreen)"/>
+  <line x1="820" y1="761" x2="878" y2="761" stroke-width="6" class="arrow-green" marker-end="url(#arrowGreen)"/>
+  <line x1="1192" y1="761" x2="1248" y2="761" stroke-width="6" class="arrow-green" marker-end="url(#arrowGreen)"/>
+
+  <path d="M724 610 C758 654 842 690 880 716" fill="none" stroke-width="5" class="muted-line" stroke-dasharray="10 10" marker-end="url(#arrowGreen)"/>
+  <text class="small" x="776" y="655" text-anchor="middle">提供 tun/utun 接口名</text>
+
+  <rect x="128" y="902" width="1280" height="70" rx="18" fill="#e6f4ff" stroke="#9dc9ee" stroke-width="2"/>
+  <text class="note" x="768" y="933" text-anchor="middle">关键点：只有显式走本地代理端口 127.0.0.1:7928 的流量进入 VPN</text>
+  <text class="note" x="768" y="958" text-anchor="middle">Web 管理后台只负责控制和观测，不承载业务转发流量</text>
+</svg>
