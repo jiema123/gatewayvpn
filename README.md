@@ -15,8 +15,10 @@ GateWayVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VP
 ---
 
 ### 演示效果
-![演示效果](https://img.justnow.uk/2026/06/f2c8f4cb3e8f584a89a246cb7cbe6aa5.gif)
+![演示效果](generated-images/gateway-test.gif)
 
+### 原理
+![原理](generated-images/gatewayvpn-system-implementation.png)
 
 ### 🚀 一键极速部署 (支持 Debian/Ubuntu/CentOS/Alpine Linux 与 macOS)
 
