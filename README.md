@@ -1,4 +1,4 @@
-# AimiliVPN 🌐
+# GateWayVPN 🌐
 
 Bilingual: [中文](#中文) | [English](#english)
 
@@ -7,31 +7,48 @@ Bilingual: [中文](#中文) | [English](#english)
 <a name="中文"></a>
 ## 中文 (Chinese)
 
-AimiliVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN 代理网关。它以纯 Python 标准库编写，内置美观响应式的管理网页，提供智能并发测速、多路由模式、出站代理网关、实时日志等强大功能。
+GateWayVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN 代理网关。它以纯 Python 标准库编写，内置美观响应式的管理网页，提供智能并发测速、多路由模式、出站代理网关、实时日志等强大功能。
 
 ### 📢 官方交流与反馈
-[![Telegram](https://img.shields.io/badge/TG交流群-arestemple-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://t.me/arestemple)
+[![Telegram](https://img.shields.io/badge/TG交流群-加入讨论-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://t.me/+dVMJYMHj5O1jM2Q9)
 [![Forum](https://img.shields.io/badge/交流论坛-339936.xyz-orange?style=flat-square&logo=discourse&logoColor=white)](https://339936.xyz)
 [![YouTube](https://img.shields.io/badge/视频教程-YouTube-red?style=flat-square&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=s-ATfXR8BpI)
 [![Email](https://img.shields.io/badge/Bug反馈-yaohunse7@gmail.com-red?style=flat-square&logo=gmail&logoColor=white)](mailto:yaohunse7@gmail.com)
 
 ---
 
-### 🚀 一键极速部署 (支持 Debian/Ubuntu/CentOS/Alpine 等 Linux 系统)
+### 🚀 一键极速部署 (支持 Debian/Ubuntu/CentOS/Alpine Linux 与 macOS)
 
-在您的 Linux VPS 上以 root 用户执行以下对应命令：
+在 Linux VPS 上以 root 用户执行；macOS 可直接执行，脚本会在需要写入系统服务时请求 sudo 权限：
 
 #### 🌟 正式稳定版本 (main 分支)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/jiema123/gatewayvpn/main/install.sh)
 ```
 
 #### 🧪 测试开发版本 (bate 分支)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/bate/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/jiema123/gatewayvpn/bate/install.sh)
 ```
 
 > 💡 **小贴士**：部署完成后，终端会输出管理网页的专属链接（含随机安全后缀，如 `http://your_vps_ip:8787/u71e9IXp4TPx`）。在终端中输入 `ml` 命令可以随时调出交互式命令行管理菜单。
+
+#### 🍎 macOS 部署说明
+
+`install.sh` 已支持 macOS：会使用 Homebrew 安装依赖，部署到 `/usr/local/gatewayvpn`，并创建 `launchd` 服务。也可以采用手动部署方式：
+
+```bash
+brew install openvpn curl git python3
+git clone https://github.com/jiema123/gatewayvpn.git
+cd gatewayvpn
+sudo python3 vpngate_manager.py
+```
+
+说明：
+
+- macOS 需要以 `root` 运行，才能创建 OpenVPN 虚拟网卡并绑定代理出站接口。
+- OpenVPN 在 macOS 上通常会创建 `utunX` 接口，程序会自动识别并绑定到实际隧道接口。
+- 一键安装会创建 `/Library/LaunchDaemons/com.gatewayvpn.manager.plist` 并提供 `/usr/local/bin/ml` 管理命令。
 
 ---
 
@@ -51,7 +68,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ba
    - **固定 IP 节点**：始终锁定连接到这一个特定节点。
 
 #### 第三步：使用本机代理 (核心步骤)
-为了防止代理端口暴露至公网被恶意扫描和滥用，AimiliVPN 的双效代理服务（默认端口 **`7928`**，自适应支持 SOCKS5 和 HTTP 协议）**默认仅绑定在本地回环地址（`127.0.0.1`）**，只接收 VPS 本机上的流量，不对外机提供代理。
+为了防止代理端口暴露至公网被恶意扫描和滥用，GateWayVPN 的双效代理服务（默认端口 **`7928`**，自适应支持 SOCKS5 和 HTTP 协议）**默认仅绑定在本地回环地址（`127.0.0.1`）**，只接收 VPS 本机上的流量，不对外机提供代理。
 
 * **🐍 Python 脚本中使用代理**:
   ```python
@@ -130,10 +147,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ba
 <a name="english"></a>
 ## English
 
-AimiliVPN is a high-performance, zero-dependency VPN proxy gateway built entirely using Python's standard library. It parses official VPNGate servers, benchmarks latency, and routes traffic through a built-in dual-protocol (HTTP/SOCKS5) proxy server.
+GateWayVPN is a high-performance, zero-dependency VPN proxy gateway built entirely using Python's standard library. It parses official VPNGate servers, benchmarks latency, and routes traffic through a built-in dual-protocol (HTTP/SOCKS5) proxy server.
 
 ### 📢 Community & Feedback
-- **Telegram Group**: [arestemple](https://t.me/arestemple)
+- **Telegram Group**: [Join the discussion](https://t.me/+dVMJYMHj5O1jM2Q9)
 - **Discussion Forum**: [339936.xyz](https://339936.xyz)
 - **Video Tutorial**: [YouTube Guide](https://www.youtube.com/watch?v=s-ATfXR8BpI)
 - **Email Contact**: yaohunse7@gmail.com
@@ -146,12 +163,12 @@ Run the corresponding command on your Linux VPS as root:
 
 #### 🌟 Stable Release (main branch)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/jiema123/gatewayvpn/main/install.sh)
 ```
 
 #### 🧪 Beta / Development (bate branch)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/bate/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/jiema123/gatewayvpn/bate/install.sh)
 ```
 
 > 💡 **Quick Note**: Once installed, copy the printed URL from the terminal to access the Web UI. Type the `ml` command in the terminal to summon the interactive CLI management console.

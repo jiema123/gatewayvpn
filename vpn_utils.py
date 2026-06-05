@@ -5,6 +5,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -15,6 +16,8 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = ROOT_DIR / "vpngate_data"
 IP_CACHE_FILE = DATA_DIR / "ip_cache.json"
+OPENVPN_RUNTIME_DIR = DATA_DIR / "runtime"
+TUNNEL_IFACE_FILE = OPENVPN_RUNTIME_DIR / "tunnel_interface.txt"
 
 ip_cache_lock = threading.RLock()
 
@@ -86,6 +89,12 @@ COUNTRY_TRANSLATIONS = {
     "Luxembourg": "卢森堡",
 }
 
+IS_LINUX = sys.platform.startswith("linux")
+IS_MACOS = sys.platform == "darwin"
+DEFAULT_TUNNEL_DEVICE = os.environ.get("VPNGATE_TUNNEL_DEVICE") or ("tun0" if IS_LINUX else "tun")
+MACOS_IP_BOUND_IF = 25
+MACOS_IPV6_BOUND_IF = 125
+
 def get_upstream_proxy() -> tuple[str | None, str | None, int | None]:
     """
     Returns (proxy_type, host, port) from environment variables.
@@ -132,6 +141,62 @@ def get_upstream_proxy() -> tuple[str | None, str | None, int | None]:
                 return "http", parts[0], int(parts[1])
     return None, None, None
 
+def get_openvpn_runtime_dir() -> Path:
+    OPENVPN_RUNTIME_DIR.mkdir(exist_ok=True, parents=True)
+    return OPENVPN_RUNTIME_DIR
+
+def get_tunnel_interface_file() -> Path:
+    get_openvpn_runtime_dir()
+    return TUNNEL_IFACE_FILE
+
+def set_current_tunnel_interface(name: str) -> None:
+    path = get_tunnel_interface_file()
+    value = (name or "").strip()
+    if value:
+        path.write_text(value + "\n", encoding="utf-8")
+    else:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+def get_current_tunnel_interface() -> str:
+    path = get_tunnel_interface_file()
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    except OSError:
+        pass
+    return DEFAULT_TUNNEL_DEVICE
+
+def interface_exists(name: str) -> bool:
+    if not name:
+        return False
+    try:
+        socket.if_nametoindex(name)
+        return True
+    except OSError:
+        return False
+
+def bind_socket_to_interface(sock: socket.socket, interface: str) -> None:
+    if not interface:
+        return
+    if IS_LINUX:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode("utf-8"))
+        return
+    if IS_MACOS:
+        if_index = socket.if_nametoindex(interface)
+        if sock.family == socket.AF_INET6:
+            sock.setsockopt(socket.IPPROTO_IPV6, MACOS_IPV6_BOUND_IF, if_index)
+        else:
+            sock.setsockopt(socket.IPPROTO_IP, MACOS_IP_BOUND_IF, if_index)
+
+def get_default_tunnel_device() -> str:
+    return DEFAULT_TUNNEL_DEVICE
+
 def is_config_tcp(config_text: str) -> bool:
     try:
         for line in config_text.splitlines():
@@ -166,6 +231,18 @@ def parse_remote(config_text: str, fallback_ip: str = "") -> tuple[str, int, str
     return remote_host, remote_port, proto
 
 def get_physical_interface() -> str | None:
+    if IS_MACOS:
+        try:
+            res = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if "interface:" in line:
+                        dev = line.split(":", 1)[1].strip()
+                        if dev and not dev.startswith(("utun", "tun", "tap", "ppp")):
+                            return dev
+        except Exception:
+            pass
+        return None
     try:
         res = subprocess.run(["ip", "route"], capture_output=True, text=True, timeout=2)
         if res.returncode == 0:
@@ -201,7 +278,7 @@ def tcp_latency_ms(host: str, port: int, dev: str | None = None) -> int:
         s.settimeout(5)
         if dev:
             try:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode("utf-8"))
+                bind_socket_to_interface(s, dev)
             except OSError:
                 pass
         s.connect((host, port))
@@ -219,7 +296,10 @@ def ping_latency_ms(host: str, port: int, fallback_ping: int = 0) -> int:
     # 1. Try ping with interface binding
     if dev:
         try:
-            cmd = ["ping", "-c", "1", "-W", "2", "-I", dev, host]
+            if IS_MACOS:
+                cmd = ["ping", "-c", "1", "-t", "2", "-b", dev, host]
+            else:
+                cmd = ["ping", "-c", "1", "-W", "2", "-I", dev, host]
             res = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -301,6 +381,9 @@ def check_and_fix_dns() -> None:
                 pass
 
     if not network_ok:
+        return
+
+    if not IS_LINUX:
         return
 
     resolv_file = Path("/etc/resolv.conf")
@@ -621,4 +704,4 @@ def diagnose_local_obstructions(proxy_port: int = 7928, host: str = "127.0.0.1")
             except Exception:
                 pass
 
-    return None
+    return None

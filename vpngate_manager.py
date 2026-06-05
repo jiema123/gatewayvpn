@@ -98,6 +98,8 @@ CONFIG_DIR = DATA_DIR / "configs"
 NODES_FILE = DATA_DIR / "nodes.json"
 STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
+RUNTIME_DIR = DATA_DIR / "runtime"
+OPENVPN_HOOK_FILE = RUNTIME_DIR / "openvpn_iface_hook.sh"
 
 lock = threading.RLock()
 active_sessions: dict[str, float] = {}
@@ -115,10 +117,31 @@ server_start_time = time.time()
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     CONFIG_DIR.mkdir(exist_ok=True)
+    RUNTIME_DIR.mkdir(exist_ok=True)
     if not AUTH_FILE.exists():
         AUTH_FILE.write_text(f"{OPENVPN_AUTH_USER}\n{OPENVPN_AUTH_PASS}\n", encoding="utf-8")
         try:
             AUTH_FILE.chmod(0o600)
+        except OSError:
+            pass
+    hook_body = """#!/bin/sh
+set -eu
+IFACE_FILE="${IFACE_FILE:-}"
+if [ -z "$IFACE_FILE" ]; then
+    exit 0
+fi
+if [ "${script_type:-}" = "up" ] || [ "${script_type:-}" = "route-up" ]; then
+    if [ -n "${dev:-}" ]; then
+        printf '%s\n' "$dev" > "$IFACE_FILE"
+    fi
+elif [ "${script_type:-}" = "down" ]; then
+    rm -f "$IFACE_FILE"
+fi
+"""
+    if not OPENVPN_HOOK_FILE.exists() or OPENVPN_HOOK_FILE.read_text(encoding="utf-8", errors="replace") != hook_body:
+        OPENVPN_HOOK_FILE.write_text(hook_body, encoding="utf-8")
+        try:
+            OPENVPN_HOOK_FILE.chmod(0o755)
         except OSError:
             pass
 
@@ -212,7 +235,7 @@ except Exception:
     pass
 
 def get_session_token(password: str, username: str = "admin") -> str:
-    salt = "aimilivpn_secure_salt_2026"
+    salt = "gatewayvpn_secure_salt_2026"
     return hashlib.sha256((username + ":" + password + salt).encode("utf-8")).hexdigest()
 
 _last_cleanup_time = 0.0
@@ -612,14 +635,15 @@ def get_openvpn_version() -> float:
     _openvpn_version = 2.4
     return _openvpn_version
 
-def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> list[str]:
+def openvpn_command(config_file: str, route_nopull: bool, dev: str | None = None) -> list[str]:
+    tunnel_dev = dev or vpn_utils.get_default_tunnel_device()
     command = shlex.split(OPENVPN_CMD, posix=False) or ["openvpn"]
     command.extend(
         [
             "--config",
             config_file,
             "--dev",
-            dev,
+            tunnel_dev,
             "--dev-type",
             "tun",
             "--pull-filter",
@@ -637,6 +661,18 @@ def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> 
             "--auth-user-pass",
             str(AUTH_FILE),
             "--auth-nocache",
+            "--script-security",
+            "2",
+            "--setenv",
+            "IFACE_FILE",
+            str(vpn_utils.get_tunnel_interface_file()),
+            "--up",
+            str(OPENVPN_HOOK_FILE),
+            "--route-up",
+            str(OPENVPN_HOOK_FILE),
+            "--down",
+            str(OPENVPN_HOOK_FILE),
+            "--down-pre",
         ]
     )
     
@@ -676,10 +712,10 @@ def kill_existing_openvpn_processes() -> None:
     if not sys.platform.startswith("linux"):
         return
     try:
-        # Terminate existing openvpn processes managing tun0 or using our vpngate configuration
-        subprocess.run(["pkill", "-f", "openvpn.*tun0"], capture_output=True, timeout=2)
+        tunnel_dev = vpn_utils.get_default_tunnel_device()
+        subprocess.run(["pkill", "-f", f"openvpn.*{tunnel_dev}"], capture_output=True, timeout=2)
         subprocess.run(["pkill", "-f", "openvpn.*vpngate_data"], capture_output=True, timeout=2)
-        print("[Cleanup] Terminated existing AimiliVPN OpenVPN processes.", flush=True)
+        print("[Cleanup] Terminated existing GateWayVPN OpenVPN processes.", flush=True)
     except Exception as e:
         print(f"[Cleanup Error] Failed to kill existing OpenVPN processes: {e}", flush=True)
 
@@ -701,11 +737,13 @@ def update_handshake_status(line_lower: str) -> None:
             set_state(active_node_latency=short_status, last_check_message=detailed_desc)
             break
 
-def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bool, timeout: int | None = None, dev: str = "tun0") -> tuple[bool, str, subprocess.Popen[str] | None]:
+def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bool, timeout: int | None = None, dev: str | None = None) -> tuple[bool, str, subprocess.Popen[str] | None]:
     limit = timeout if timeout is not None else OPENVPN_TEST_TIMEOUT_SECONDS
+    tunnel_dev = dev or vpn_utils.get_default_tunnel_device()
+    vpn_utils.set_current_tunnel_interface("")
     try:
         process = subprocess.Popen(
-            openvpn_command(config_file, route_nopull, dev),
+            openvpn_command(config_file, route_nopull, tunnel_dev),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -777,7 +815,32 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     return ok, message, process
 
 
-def setup_policy_routing(interface: str = "tun0") -> None:
+def setup_policy_routing(interface: str | None = None) -> None:
+    interface = interface or vpn_utils.get_current_tunnel_interface()
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(
+                ["route", "-n", "delete", "-ifscope", interface, "default"],
+                capture_output=True,
+                timeout=2,
+            )
+        except Exception:
+            pass
+        try:
+            subprocess.run(
+                ["route", "-n", "add", "-ifscope", interface, "default", "-interface", interface],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            print(f"[policy_routing] Enabled macOS scoped default route for interface {interface}", flush=True)
+        except Exception as e:
+            print(f"[路由配置失败] [错误代码 3003] [ERR_MACOS_SCOPED_ROUTE_FAILED] 无法为 {interface} 添加 macOS scoped 默认路由: {e}", flush=True)
+            log_to_json("ERROR", "Routing", f"[错误代码 3003] [ERR_MACOS_SCOPED_ROUTE_FAILED] 无法为 {interface} 添加 macOS scoped 默认路由")
+        return
+    if not sys.platform.startswith("linux"):
+        return
     try:
         subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
     except Exception:
@@ -810,6 +873,20 @@ def setup_policy_routing(interface: str = "tun0") -> None:
         log_to_json("ERROR", "Routing", "[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 100 添加默认路由")
 
 def cleanup_policy_routing() -> None:
+    if sys.platform == "darwin":
+        interface = vpn_utils.get_current_tunnel_interface()
+        try:
+            subprocess.run(
+                ["route", "-n", "delete", "-ifscope", interface, "default"],
+                capture_output=True,
+                timeout=2,
+            )
+            print(f"[policy_routing] Cleared macOS scoped default route for interface {interface}", flush=True)
+        except Exception:
+            pass
+        return
+    if not sys.platform.startswith("linux"):
+        return
     try:
         subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
         subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
@@ -820,6 +897,7 @@ def cleanup_policy_routing() -> None:
 def stop_active_openvpn() -> None:
     global active_openvpn_process, active_openvpn_node_id
     cleanup_policy_routing()
+    vpn_utils.set_current_tunnel_interface("")
     config_to_delete = None
     if active_openvpn_node_id:
         nodes = read_json(NODES_FILE, [])
@@ -1155,9 +1233,10 @@ def connect_node(node_id: str) -> str:
             
         active_openvpn_process = process
         active_openvpn_node_id = node_id
+        tunnel_if = vpn_utils.get_current_tunnel_interface()
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
-        setup_policy_routing("tun0")
+        setup_policy_routing(tunnel_if)
         
         global last_active_ping_time, last_active_latency
         last_active_ping_time = time.time()
@@ -1200,7 +1279,7 @@ def connect_node(node_id: str) -> str:
             
         latency_str = f"{last_active_latency} ms" if last_active_latency > 0 else "检测超时"
         set_state(active_openvpn_node_id=node_id, is_connecting=False, last_check_message=f"Connected {node_id}", active_node_latency=latency_str)
-        log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，出口网卡 tun0 已启用")
+        log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，出口网卡 {tunnel_if} 已启用")
         return f"Connected {node_id}"
     finally:
         with lock:
@@ -1349,8 +1428,8 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AimiliVPN - 安全登录</title>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <title>GateWayVPN - 安全登录</title>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500&family=Archivo+Black&family=Inter:wght@500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-dark: #090d16;
@@ -1368,7 +1447,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     body {
       margin: 0;
       padding: 0;
-      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background-color: var(--bg-dark);
       background-image: 
         radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
@@ -1526,6 +1605,119 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       cursor: not-allowed;
       transform: none !important;
     }
+    /* GateWayVPN Air-inspired visual system */
+    :root {
+      --color-sky-gradient: linear-gradient(180deg, #8a7bc2 0%, #b29fc8 35%, #d4b8a0 70%, #d4a578 100%);
+      --color-sculpture-ink: #1b1b1b;
+      --color-cloud-white: #ffffff;
+      --color-soft-fog: #f5f5f5;
+      --color-signal-blue: #2b7fff;
+      --text-primary: var(--color-sculpture-ink);
+      --text-secondary: rgba(27, 27, 27, 0.66);
+      --primary: var(--color-signal-blue);
+      --primary-gradient: transparent;
+      --primary-hover: rgba(255, 255, 255, 0.55);
+      --danger: #9f1239;
+    }
+    html {
+      background: #8a7bc2;
+    }
+    body {
+      min-height: 100vh;
+      color: var(--color-sculpture-ink);
+      background:
+        radial-gradient(ellipse at 15% 74%, rgba(255,255,255,0.92) 0 8%, rgba(255,255,255,0.58) 16%, transparent 30%),
+        radial-gradient(ellipse at 48% 84%, rgba(255,255,255,0.82) 0 12%, rgba(255,255,255,0.45) 23%, transparent 38%),
+        radial-gradient(ellipse at 86% 78%, rgba(255,255,255,0.76) 0 10%, rgba(255,255,255,0.36) 22%, transparent 34%),
+        radial-gradient(circle at 78% 18%, rgba(255,255,255,0.16) 0 8%, transparent 20%),
+        var(--color-sky-gradient);
+      background-attachment: fixed;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto -12vw -10vh -12vw;
+      height: 42vh;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 18% 70%, rgba(255,255,255,0.78) 0 18%, transparent 19%),
+        radial-gradient(ellipse at 45% 45%, rgba(255,255,255,0.62) 0 20%, transparent 21%),
+        radial-gradient(ellipse at 75% 65%, rgba(255,255,255,0.7) 0 19%, transparent 20%);
+      filter: blur(2px);
+      opacity: 0.9;
+    }
+    body::after {
+      content: "G";
+      inset: auto auto 2vh 50%;
+      transform: translateX(-50%);
+      height: auto;
+      background: transparent;
+      color: rgba(27, 27, 27, 0.18);
+      font: 900 clamp(180px, 34vw, 420px)/0.85 Impact, "Arial Black", sans-serif;
+      filter: none;
+      z-index: 0;
+    }
+    .login-container {
+      position: relative;
+      z-index: 1;
+      max-width: 460px;
+    }
+    .login-card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.62), rgba(255,255,255,0.42));
+      border: 1px solid rgba(255, 255, 255, 0.78);
+      border-radius: 11px;
+      box-shadow: 0 22px 70px rgba(27, 27, 27, 0.16);
+      backdrop-filter: blur(34px) saturate(1.36);
+      -webkit-backdrop-filter: blur(34px) saturate(1.36);
+      color: var(--color-sculpture-ink);
+    }
+    .brand-logo {
+      background: rgba(255, 255, 255, 0.5);
+      border: 1px solid rgba(27, 27, 27, 0.18);
+      border-radius: 9999px;
+      color: var(--color-sculpture-ink);
+    }
+    .brand-logo::after { border-color: rgba(255,255,255,0.8); }
+    .login-title {
+      color: var(--color-sculpture-ink);
+      font-family: 'Caveat', cursive;
+      font-size: 48px;
+      font-weight: 500;
+      letter-spacing: 0;
+      line-height: 1;
+    }
+    .login-subtitle,
+    .form-label {
+      color: rgba(27, 27, 27, 0.68);
+      font-weight: 500;
+    }
+    .input-field {
+      background: var(--color-soft-fog);
+      border: 1px solid rgba(27, 27, 27, 0.42);
+      border-radius: 4px;
+      color: var(--color-sculpture-ink);
+      font-weight: 500;
+    }
+    .input-field:focus {
+      background: #fff;
+      border-color: var(--color-signal-blue);
+      box-shadow: 0 0 0 3px rgba(43, 127, 255, 0.18);
+    }
+    .login-btn {
+      background: #ffffff;
+      color: var(--color-sculpture-ink);
+      border: 1px solid rgba(27, 27, 27, 0.72);
+      border-radius: 9999px;
+      box-shadow: none;
+      font-weight: 500;
+    }
+    .login-btn:hover {
+      background: rgba(255,255,255,0.78);
+      box-shadow: none;
+      transform: translateY(-1px);
+    }
   </style>
 </head>
 <body>
@@ -1536,7 +1728,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
         </svg>
       </div>
-      <h2 class="login-title">AimiliVPN</h2>
+      <h2 class="login-title">GateWayVPN</h2>
       <p class="login-subtitle">请输入您的管理账号和安全密码以继续</p>
       
       <form id="login_form" onsubmit="handleLogin(event)">
@@ -1606,9 +1798,9 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AimiliVPN 节点池管理系统</title>
+  <title>GateWayVPN 节点池管理系统</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500&family=Archivo+Black&family=Inter:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
     
     :root {
       --bg-dark: #0b0f19;
@@ -1633,7 +1825,7 @@ INDEX_HTML = r"""<!doctype html>
 
     body {
       margin: 0;
-      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background-color: var(--bg-dark);
       background-image: 
         radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
@@ -1940,38 +2132,6 @@ INDEX_HTML = r"""<!doctype html>
       min-width: 320px;
       margin-bottom: 0 !important;
     }
-    .vps-promo-tab {
-      position: fixed;
-      right: 0;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 38px;
-      background: var(--primary-gradient);
-      border: 1px solid var(--border-color-hover);
-      border-right: none;
-      border-radius: 8px 0 0 8px;
-      padding: 16px 6px;
-      color: white;
-      font-weight: 700;
-      font-size: 13px;
-      line-height: 1.4;
-      text-align: center;
-      cursor: pointer;
-      z-index: 999;
-      box-shadow: -4px 0 20px rgba(99, 102, 241, 0.3);
-      transition: all 0.3s ease;
-      writing-mode: vertical-rl;
-      text-orientation: mixed;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-    }
-    .vps-promo-tab:hover {
-      padding-right: 10px;
-      box-shadow: -4px 0 25px rgba(99, 102, 241, 0.5);
-    }
-
     .ad-section {
       background: var(--bg-surface);
       backdrop-filter: blur(12px);
@@ -2095,7 +2255,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     
     .forum-link {
-      color: #818cf8;
+      color: #2b7fff;
       font-weight: 700;
       text-decoration: none;
       transition: color 0.2s ease;
@@ -2269,9 +2429,9 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     .current-badge {
-      background: rgba(99, 102, 241, 0.15);
-      color: #818cf8;
-      border-color: rgba(99, 102, 241, 0.3);
+      background: rgba(43, 127, 255, 0.1);
+      color: #1456b8;
+      border-color: rgba(43, 127, 255, 0.26);
     }
 
     .table-actions {
@@ -2281,8 +2441,8 @@ INDEX_HTML = r"""<!doctype html>
 
     .connect-btn {
       background: transparent;
-      color: #818cf8;
-      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #1456b8;
+      border: 1px solid rgba(43, 127, 255, 0.46);
       border-radius: 6px;
       padding: 0 12px;
       height: 30px;
@@ -2495,30 +2655,413 @@ INDEX_HTML = r"""<!doctype html>
       background-color: #0f172a;
       color: #f8fafc;
     }
+    /* GateWayVPN Air-inspired redesign layer */
+    :root {
+      --color-sky-gradient: linear-gradient(180deg, #8a7bc2 0%, #b29fc8 35%, #d4b8a0 70%, #d4a578 100%);
+      --color-sculpture-ink: #1b1b1b;
+      --color-pure-onyx: #000000;
+      --color-cloud-white: #ffffff;
+      --color-soft-fog: #f5f5f5;
+      --color-dusk-blue: #426188;
+      --color-signal-blue: #2b7fff;
+      --bg-dark: #d4a578;
+      --bg-surface: rgba(255, 255, 255, 0.6);
+      --bg-surface-hover: rgba(255, 255, 255, 0.76);
+      --border-color: rgba(255, 255, 255, 0.78);
+      --border-color-hover: rgba(27, 27, 27, 0.35);
+      --text-primary: var(--color-sculpture-ink);
+      --text-secondary: rgba(27, 27, 27, 0.64);
+      --primary: var(--color-signal-blue);
+      --primary-gradient: transparent;
+      --primary-hover: rgba(255, 255, 255, 0.72);
+      --success: #0f7f56;
+      --success-gradient: transparent;
+      --danger: #a4143e;
+      --danger-gradient: transparent;
+      --warning: #8a5b00;
+      --active-row-bg: rgba(255,255,255,0.62);
+      --active-row-border: rgba(15,127,86,0.28);
+    }
+    html {
+      background: #8a7bc2;
+    }
+    body {
+      background: var(--color-sky-gradient);
+      color: var(--color-sculpture-ink);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-weight: 500;
+      position: relative;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse at 12% 82%, rgba(255,255,255,0.92) 0 7%, rgba(255,255,255,0.58) 15%, transparent 28%),
+        radial-gradient(ellipse at 34% 92%, rgba(255,255,255,0.82) 0 10%, rgba(255,255,255,0.42) 21%, transparent 36%),
+        radial-gradient(ellipse at 67% 82%, rgba(255,255,255,0.76) 0 9%, rgba(255,255,255,0.36) 20%, transparent 35%),
+        radial-gradient(ellipse at 92% 74%, rgba(255,255,255,0.66) 0 8%, rgba(255,255,255,0.3) 19%, transparent 32%),
+        radial-gradient(ellipse at 72% 20%, rgba(255,255,255,0.16) 0 7%, transparent 20%);
+      filter: blur(4px);
+      opacity: 0.96;
+    }
+    body::after {
+      content: "GATE";
+      position: fixed;
+      right: -2vw;
+      bottom: -1vw;
+      z-index: 0;
+      color: rgba(27, 27, 27, 0.16);
+      font: 900 clamp(120px, 18vw, 260px)/0.85 'Archivo Black', Impact, sans-serif;
+      pointer-events: none;
+    }
+    header,
+    main {
+      position: relative;
+      z-index: 1;
+    }
+    header {
+      background: transparent;
+      border-bottom: 0;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      padding: 24px 32px 12px;
+    }
+    h1 {
+      color: var(--color-sculpture-ink);
+      background: none;
+      -webkit-text-fill-color: currentColor;
+      font-family: 'Caveat', cursive;
+      font-size: 44px;
+      font-weight: 500;
+      letter-spacing: 0;
+      line-height: 0.95;
+    }
+    h1 svg {
+      color: var(--color-sculpture-ink) !important;
+    }
+    .brand-wordmark {
+      font-family: 'Caveat', cursive;
+      font-size: 46px;
+      line-height: 0.9;
+      font-weight: 500;
+    }
+    .brand-product-title {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 18px;
+      line-height: 1.1;
+      font-weight: 600;
+      color: rgba(27, 27, 27, 0.74);
+      margin-left: 4px;
+    }
+    .status {
+      color: rgba(27,27,27,0.68);
+    }
+    .status-dot {
+      background: var(--color-signal-blue);
+      box-shadow: 0 0 0 4px rgba(43,127,255,0.12);
+    }
+    button,
+    .btn-telegram,
+    .connect-btn,
+    .test-btn,
+    .ad-btn,
+    .header-badge-link {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      border-radius: 9999px;
+      border: 1px solid rgba(255,255,255,0.92);
+      background: rgba(255,255,255,0.32);
+      color: var(--color-sculpture-ink);
+      box-shadow: none;
+      font-weight: 500;
+    }
+    button:hover,
+    .btn-telegram:hover,
+    .connect-btn:hover:not(:disabled),
+    .test-btn:hover:not(:disabled) {
+      background: rgba(255,255,255,0.66);
+      color: var(--color-sculpture-ink);
+      border-color: rgba(27,27,27,0.35);
+      box-shadow: none;
+    }
+    .btn-primary,
+    .btn-danger {
+      background: rgba(255,255,255,0.62) !important;
+      color: var(--color-sculpture-ink) !important;
+      border: 1px solid rgba(27,27,27,0.32) !important;
+      box-shadow: none !important;
+    }
+    .btn-telegram {
+      color: var(--color-signal-blue);
+      border-color: rgba(255,255,255,0.92);
+    }
+    .btn-telegram:hover {
+      color: #1456b8;
+      border-color: rgba(43,127,255,0.46);
+    }
+    main {
+      max-width: 1480px;
+      padding: 24px 32px 56px;
+    }
+    main::before {
+      content: "";
+      position: fixed;
+      left: 8vw;
+      right: 8vw;
+      bottom: 0;
+      height: 34vh;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 8% 100%, rgba(255,255,255,0.86) 0 14%, transparent 32%),
+        radial-gradient(ellipse at 42% 100%, rgba(255,255,255,0.72) 0 18%, transparent 38%),
+        radial-gradient(ellipse at 88% 100%, rgba(255,255,255,0.68) 0 16%, transparent 34%);
+      filter: blur(8px);
+    }
+    .active-card,
+    .stat,
+    .toolbar,
+    .table-wrapper,
+    .ad-section,
+    .modal-content {
+      background: linear-gradient(180deg, rgba(255,255,255,0.58), rgba(255,255,255,0.38)) !important;
+      border: 1px solid rgba(255,255,255,0.78) !important;
+      border-radius: 11px !important;
+      box-shadow: 0 22px 70px rgba(27,27,27,0.14) !important;
+      backdrop-filter: blur(30px) saturate(1.35);
+      -webkit-backdrop-filter: blur(30px) saturate(1.35);
+      color: var(--color-sculpture-ink);
+    }
+    .stat strong,
+    .active-card-value,
+    .mono {
+      background: none;
+      -webkit-text-fill-color: currentColor;
+      color: var(--color-sculpture-ink);
+    }
+    td {
+      color: var(--color-sculpture-ink);
+      font-weight: 500;
+    }
+    td .mono,
+    .mono {
+      color: rgba(27,27,27,0.82) !important;
+    }
+    a,
+    .forum-link {
+      color: var(--color-signal-blue);
+    }
+    .forum-link:hover {
+      color: #1456b8;
+    }
+    .active-card-title,
+    .form-label,
+    th,
+    .stat span,
+    .active-card-meta,
+    .footer-note {
+      color: rgba(27,27,27,0.66) !important;
+    }
+    .toolbar input,
+    .toolbar select,
+    .input-field {
+      background: var(--color-soft-fog) !important;
+      border: 1px solid rgba(27,27,27,0.35) !important;
+      color: var(--color-sculpture-ink) !important;
+      border-radius: 4px !important;
+      font-weight: 500;
+    }
+    .toolbar input:focus,
+    .toolbar select:focus,
+    .input-field:focus {
+      border-color: var(--color-signal-blue) !important;
+      box-shadow: 0 0 0 3px rgba(43,127,255,0.18) !important;
+      background: #fff !important;
+    }
+    .table-wrapper {
+      overflow: hidden;
+    }
+    tbody tr {
+      background: rgba(255,255,255,0.18);
+    }
+    tbody tr:nth-child(even) {
+      background: rgba(255,255,255,0.28);
+    }
+    th {
+      background: rgba(255,255,255,0.34);
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 600;
+      color: rgba(27,27,27,0.68) !important;
+    }
+    th, td {
+      border-bottom: 1px solid rgba(27,27,27,0.1);
+    }
+    tr:hover {
+      background: rgba(255,255,255,0.42);
+    }
+    .active-row {
+      background: var(--active-row-bg) !important;
+      outline: 1px solid var(--active-row-border) !important;
+      box-shadow: inset 3px 0 0 rgba(15,127,86,0.54);
+    }
+    .active-row td {
+      border-bottom-color: var(--active-row-border);
+      border-top-color: var(--active-row-border);
+    }
+    .dropdown-content {
+      background: rgba(255,255,255,0.86);
+      border: 1px solid rgba(27,27,27,0.16);
+      box-shadow: 0 16px 44px rgba(27,27,27,0.14);
+    }
+    .dropdown-content a {
+      color: var(--color-sculpture-ink);
+    }
+    .dropdown-content a:hover {
+      background: rgba(27,27,27,0.06);
+    }
+    .badge {
+      border-radius: 9999px;
+      font-weight: 500;
+    }
+    .available {
+      background: rgba(15,127,86,0.12);
+      color: #075f40;
+      border-color: rgba(15,127,86,0.24);
+    }
+    .unavailable {
+      background: rgba(164,20,62,0.1);
+      color: #8f143a;
+      border-color: rgba(164,20,62,0.22);
+    }
+    .not_checked {
+      background: rgba(138,91,0,0.1);
+      color: #735000;
+      border-color: rgba(138,91,0,0.22);
+    }
+    .connect-btn {
+      background: rgba(255,255,255,0.38) !important;
+      color: #1456b8 !important;
+      border-color: rgba(43,127,255,0.46) !important;
+      min-width: 58px;
+    }
+    .test-btn {
+      background: rgba(255,255,255,0.38) !important;
+      color: #075f40 !important;
+      border-color: rgba(15,127,86,0.42) !important;
+      min-width: 58px;
+    }
+    .connect-btn:hover:not(:disabled) {
+      background: rgba(255,255,255,0.7) !important;
+      color: #0d4397 !important;
+      border-color: rgba(43,127,255,0.72) !important;
+      box-shadow: 0 8px 22px rgba(43,127,255,0.12);
+    }
+    .test-btn:hover:not(:disabled) {
+      background: rgba(255,255,255,0.7) !important;
+      color: #054b31 !important;
+      border-color: rgba(15,127,86,0.66) !important;
+      box-shadow: 0 8px 22px rgba(15,127,86,0.12);
+    }
+    .connect-btn:disabled,
+    .test-btn:disabled,
+    button:disabled {
+      background: rgba(255,255,255,0.34) !important;
+      color: rgba(27,27,27,0.56) !important;
+      border-color: rgba(27,27,27,0.16) !important;
+      opacity: 1 !important;
+      cursor: not-allowed;
+      box-shadow: none !important;
+    }
+    .connect-btn.is-active,
+    .connect-btn.is-active:disabled {
+      background: rgba(15,127,86,0.13) !important;
+      color: #075f40 !important;
+      border-color: rgba(15,127,86,0.36) !important;
+      cursor: default;
+    }
+    .latency-val {
+      font-weight: 600;
+    }
+    .latency-good {
+      background: rgba(15,127,86,0.12) !important;
+      color: #075f40 !important;
+    }
+    .latency-medium {
+      background: rgba(138,91,0,0.12) !important;
+      color: #735000 !important;
+    }
+    .latency-poor {
+      background: rgba(164,20,62,0.1) !important;
+      color: #8f143a !important;
+    }
+    .current-badge {
+      background: rgba(43,127,255,0.1) !important;
+      color: #1456b8 !important;
+      border-color: rgba(43,127,255,0.26) !important;
+    }
+    .pagination-container strong {
+      color: var(--color-sculpture-ink) !important;
+    }
+    .pagination-container #current_page_val {
+      color: var(--color-signal-blue) !important;
+    }
+    #log_terminal_container {
+      background: rgba(27,27,27,0.84) !important;
+      color: #fff !important;
+      border-radius: 8px !important;
+    }
+    select option {
+      background-color: #ffffff;
+      color: #1b1b1b;
+    }
+    @media (max-width: 768px) {
+      header {
+        padding: 18px 18px 10px;
+      }
+      h1 {
+        font-size: 24px;
+      }
+      .brand-wordmark { font-size: 36px; }
+      .brand-product-title { font-size: 15px; }
+      .btn-group {
+        gap: 8px;
+      }
+      .btn-group button,
+      .btn-group .btn-telegram {
+        min-width: 0;
+        padding: 0 12px;
+      }
+      main {
+        padding: 16px 18px 40px;
+      }
+      .toolbar {
+        gap: 10px;
+      }
+      .toolbar input,
+      .toolbar select,
+      #btn_batch_test {
+        width: 100%;
+        min-width: 0;
+      }
+    }
   </style>
 </head>
 <body>
 <header>
   <div class="brand">
     <h1>
-      <svg xmlns="http://www.w3.org/2000/svg" style="width:24px; height:24px; color:#818cf8;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-      AimiliVPN 节点管理系统
+      <svg xmlns="http://www.w3.org/2000/svg" style="width:24px; height:24px; color:var(--color-signal-blue);" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+      <span class="brand-wordmark">GateWayVPN</span>
+      <span class="brand-product-title">节点管理系统</span>
     </h1>
     <div id="status" class="status" style="display: none;"><span class="status-dot"></span>服务加载中...</div>
   </div>
   <div class="btn-group">
-    <div class="dropdown">
-      <button id="github_btn" class="btn-primary" style="background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border-color); color: var(--text-primary);">
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: middle; margin-right: 4px;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-        GITHUB
-        <svg xmlns="http://www.w3.org/2000/svg" style="width:12px; height:12px; margin-left: 2px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
-      </button>
-      <div id="github_dropdown" class="dropdown-content">
-        <a href="https://github.com/baoweise-bot/aimili-vpngate" target="_blank">正式版</a>
-        <a href="https://github.com/baoweise-bot/aimili-vpngate/tree/bate" target="_blank">测试版</a>
-      </div>
-    </div>
-    <a href="https://t.me/arestemple" target="_blank" class="btn-telegram">
+    <a href="https://t.me/+dVMJYMHj5O1jM2Q9" target="_blank" class="btn-telegram">
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: middle; margin-right: 4px;"><path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8.287 5.906c-.778.324-2.334.994-4.666 2.01-.378.15-.577.298-.595.442-.03.243.275.339.69.47l.175.055c.408.133.958.288 1.243.294.26.006.549-.1.868-.32 2.179-1.471 3.304-2.214 3.374-2.23.05-.012.12-.026.166.016.047.041.042.12.037.141-.03.129-1.227 1.241-1.846 1.817-.193.18-.33.307-.358.336-.063.065-.129.13-.19.193-.34.347-.597.609-.043.974.265.175.474.319.684.457.228.15.457.301.765.503.074.049.143.098.207.143.297.206.58.404.916.373.195-.018.398-.2.502-.754.25-1.332.74-4.22.842-5.281.01-.088.001-.22-.103-.312-.104-.092-.252-.09-.323-.087a1.52 1.52 0 0 0-.254.04z"/></svg>
       Telegram
     </a>
@@ -2758,8 +3301,6 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </div>
 
-  <div class="vps-promo-tab" onclick="openAdModal()">VPS购买推荐</div>
-
   <!-- Gateway Modal (网关自检与代理测试) -->
   <div id="gateway_modal" class="modal">
     <div class="modal-content" style="max-width: 600px; width: 90%;">
@@ -2870,7 +3411,7 @@ INDEX_HTML = r"""<!doctype html>
 <script>
 let nodes=[], state={}, testingNodeIds = new Set();
 let currentPage = 1;
-const pageSize = 11;
+const pageSize = 25;
 let currentPageNodes = [];
 
 const $=id=>document.getElementById(id);
@@ -3190,9 +3731,9 @@ function render(){
       
       // Connect button is disabled if probe status is "unavailable" and not already active, or if we are already connecting
       const isUnavailable = n.probe_status === "unavailable";
-      const connectBtn = isCurrentlyActive 
-        ? `<button class="connect-btn" disabled style="background: var(--success-gradient); color: white; cursor: default; opacity: 1;">已连接</button>`
-        : `<button class="connect-btn" ${(isUnavailable || state.is_connecting) ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''} onclick="connectNode('${esc(n.id)}')">切换</button>`;
+      const connectBtn = isCurrentlyActive
+        ? `<button class="connect-btn is-active" disabled>已连接</button>`
+        : `<button class="connect-btn" ${(isUnavailable || state.is_connecting) ? 'disabled' : ''} onclick="connectNode('${esc(n.id)}')">切换</button>`;
       
       return `<tr ${rowClass}>
         <td><span class="badge ${badgeClass}">${badgeText}</span></td>
@@ -3464,33 +4005,20 @@ $("btn_test_proxy").onclick = async () => {
   }
 };
 
-// Admin dropdown toggle & GitHub dropdown toggle
+// Admin dropdown toggle
 const adminBtn = $("admin_btn");
 const adminDropdown = $("admin_dropdown");
-const githubBtn = $("github_btn");
-const githubDropdown = $("github_dropdown");
 
 if (adminBtn && adminDropdown) {
   adminBtn.onclick = (e) => {
     e.stopPropagation();
     const isShow = adminDropdown.style.display === "block";
     adminDropdown.style.display = isShow ? "none" : "block";
-    if (githubDropdown) githubDropdown.style.display = "none";
-  };
-}
-
-if (githubBtn && githubDropdown) {
-  githubBtn.onclick = (e) => {
-    e.stopPropagation();
-    const isShow = githubDropdown.style.display === "block";
-    githubDropdown.style.display = isShow ? "none" : "block";
-    if (adminDropdown) adminDropdown.style.display = "none";
   };
 }
 
 document.addEventListener("click", () => {
   if (adminDropdown) adminDropdown.style.display = "none";
-  if (githubDropdown) githubDropdown.style.display = "none";
 });
 
 function handleRoutingModeChange(mode) {
@@ -3972,12 +4500,17 @@ def check_proxy_health() -> dict[str, Any]:
         except Exception:
             pass
 
-    # 2. 检测虚拟网卡 tun0 是否存在 (Linux 下)
-    tun_path = Path("/sys/class/net/tun0")
-    if sys.platform.startswith("linux") and not tun_path.exists():
+    # 2. 检测 VPN 虚拟网卡是否存在
+    tunnel_if = vpn_utils.get_current_tunnel_interface()
+    if sys.platform.startswith("linux") and not Path(f"/sys/class/net/{tunnel_if}").exists():
         return {
             "ok": False,
-            "error": "[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 (tun0) 未启用，请确保当前已成功连接 VPN 节点"
+            "error": f"[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 ({tunnel_if}) 未启用，请确保当前已成功连接 VPN 节点"
+        }
+    if sys.platform == "darwin" and not vpn_utils.interface_exists(tunnel_if):
+        return {
+            "ok": False,
+            "error": f"[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 ({tunnel_if}) 未启用，请确保当前已成功连接 VPN 节点"
         }
 
     # 3. 使用 curl 通过本地 SOCKS5 代理接口测试 IP 与实际延迟
@@ -4274,11 +4807,15 @@ class Handler(BaseHTTPRequestHandler):
             ovpn_ok = active_openvpn_running()
             ovpn_err = ""
             ovpn_details = "未连接"
+            tunnel_if = vpn_utils.get_current_tunnel_interface()
             if ovpn_ok:
                 ovpn_details = f"已连接节点: {active_openvpn_node_id}"
                 if sys.platform.startswith("linux"):
-                    if not Path("/sys/class/net/tun0").exists():
-                        ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
+                    if not Path(f"/sys/class/net/{tunnel_if}").exists():
+                        ovpn_err = f"[警告] 虚拟网卡 ({tunnel_if}) 未启用，可能存在策略路由配置问题。"
+                elif sys.platform == "darwin":
+                    if not vpn_utils.interface_exists(tunnel_if):
+                        ovpn_err = f"[警告] 虚拟网卡 ({tunnel_if}) 未启用，可能存在隧道初始化问题。"
             else:
                 if active_openvpn_node_id:
                     ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
@@ -4610,14 +5147,23 @@ class Tee:
         Path(file_path).parent.mkdir(exist_ok=True, parents=True)
         self.file = open(file_path, "a", encoding="utf-8")
         self.stdout = sys.stdout
+        self.stdout_broken = False
 
     def write(self, data: str) -> None:
-        self.stdout.write(data)
+        if not self.stdout_broken:
+            try:
+                self.stdout.write(data)
+            except (BrokenPipeError, OSError, ValueError):
+                self.stdout_broken = True
         self.file.write(data)
         self.file.flush()
 
     def flush(self) -> None:
-        self.stdout.flush()
+        if not self.stdout_broken:
+            try:
+                self.stdout.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                self.stdout_broken = True
         self.file.flush()
 
 def main() -> None:

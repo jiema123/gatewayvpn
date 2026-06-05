@@ -1,0 +1,15 @@
+- generic [ref=e3]:
+  - img [ref=e5]
+  - heading "AimiliVPN" [level=2] [ref=e7]
+  - paragraph [ref=e8]: 请输入您的管理账号和安全密码以继续
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - generic [ref=e11]: 管理账号
+      - textbox "管理账号" [ref=e13]:
+        - /placeholder: 请输入管理账号
+    - generic [ref=e14]:
+      - generic [ref=e15]: 安全密码
+      - textbox "安全密码" [ref=e17]:
+        - /placeholder: 请输入安全密码
+    - button "登录" [ref=e18] [cursor=pointer]:
+      - generic [ref=e19]: 登录

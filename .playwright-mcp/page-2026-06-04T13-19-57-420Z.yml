@@ -1,0 +1,225 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - heading "AimiliVPN 节点管理系统" [level=1] [ref=e4]:
+      - img [ref=e5]
+      - text: AimiliVPN 节点管理系统
+    - generic [ref=e7]:
+      - button "GITHUB" [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+        - text: GITHUB
+        - img [ref=e12]
+      - link "Telegram" [ref=e14] [cursor=pointer]:
+        - /url: https://t.me/arestemple
+        - img [ref=e15]
+        - text: Telegram
+      - button "更新节点" [ref=e17] [cursor=pointer]:
+        - img [ref=e18]
+        - text: 更新节点
+      - button "管理员" [ref=e21] [cursor=pointer]:
+        - img [ref=e22]
+        - text: 管理员
+        - img [ref=e24]
+  - main [ref=e26]:
+    - generic [ref=e29]:
+      - img [ref=e31]
+      - generic [ref=e33]:
+        - generic [ref=e34]:
+          - generic [ref=e35]: 未连接
+          - text: 当前未连接 VPN 节点
+        - generic [ref=e36]: 在下方列表中选择一个可用备用节点并点击 “切换” 按钮开始连接。
+    - generic [ref=e37]:
+      - combobox [ref=e38] [cursor=pointer]:
+        - option "所有国家" [selected]
+        - option "俄罗斯"
+        - option "印度"
+        - option "日本"
+        - option "泰国"
+        - option "罗马尼亚"
+        - option "美国"
+        - option "越南"
+        - option "韩国"
+      - textbox "输入国家、位置、IP、ASN、运营主体等过滤节点..." [ref=e39]
+      - button "批量测试本页" [ref=e40] [cursor=pointer]:
+        - img [ref=e41]
+        - text: 批量测试本页
+    - generic [ref=e43]:
+      - table [ref=e45]:
+        - rowgroup [ref=e46]:
+          - 'row "状态 延迟 IP 地址 : 端口 物理位置 ASN 运营主体 / ISP 网络质量 IP 类型 操作" [ref=e47]':
+            - columnheader "状态" [ref=e48]
+            - columnheader "延迟" [ref=e49]
+            - 'columnheader "IP 地址 : 端口" [ref=e50]'
+            - columnheader "物理位置" [ref=e51]
+            - columnheader "ASN" [ref=e52]
+            - columnheader "运营主体 / ISP" [ref=e53]
+            - columnheader "网络质量" [ref=e54]
+            - columnheader "IP 类型" [ref=e55]
+            - columnheader "操作" [ref=e56]
+        - rowgroup [ref=e57]:
+          - row "不可用 579 ms 219.100.37.82:443 日本 - - - - 检测 切换" [ref=e58]:
+            - cell "不可用" [ref=e59]:
+              - generic [ref=e60]: 不可用
+            - cell "579 ms" [ref=e61]
+            - cell "219.100.37.82:443" [ref=e62]
+            - cell "日本" [ref=e63]
+            - cell "-" [ref=e64]
+            - cell "-" [ref=e65]
+            - cell "-" [ref=e66]
+            - cell "-" [ref=e67]
+            - cell "检测 切换" [ref=e68]:
+              - generic [ref=e69]:
+                - button "检测" [ref=e70] [cursor=pointer]
+                - button "切换" [disabled] [ref=e71]
+          - row "不可用 533 ms 219.100.37.207:443 日本 - - - - 检测 切换" [ref=e72]:
+            - cell "不可用" [ref=e73]:
+              - generic [ref=e74]: 不可用
+            - cell "533 ms" [ref=e75]
+            - cell "219.100.37.207:443" [ref=e76]
+            - cell "日本" [ref=e77]
+            - cell "-" [ref=e78]
+            - cell "-" [ref=e79]
+            - cell "-" [ref=e80]
+            - cell "-" [ref=e81]
+            - cell "检测 切换" [ref=e82]:
+              - generic [ref=e83]:
+                - button "检测" [ref=e84] [cursor=pointer]
+                - button "切换" [disabled] [ref=e85]
+          - row "不可用 13 ms 219.100.37.161:443 日本 - - - - 检测 切换" [ref=e86]:
+            - cell "不可用" [ref=e87]:
+              - generic [ref=e88]: 不可用
+            - cell "13 ms" [ref=e89]
+            - cell "219.100.37.161:443" [ref=e90]
+            - cell "日本" [ref=e91]
+            - cell "-" [ref=e92]
+            - cell "-" [ref=e93]
+            - cell "-" [ref=e94]
+            - cell "-" [ref=e95]
+            - cell "检测 切换" [ref=e96]:
+              - generic [ref=e97]:
+                - button "检测" [ref=e98] [cursor=pointer]
+                - button "切换" [disabled] [ref=e99]
+          - row "不可用 206 ms 219.100.37.225:443 日本 - - - - 检测 切换" [ref=e100]:
+            - cell "不可用" [ref=e101]:
+              - generic [ref=e102]: 不可用
+            - cell "206 ms" [ref=e103]
+            - cell "219.100.37.225:443" [ref=e104]
+            - cell "日本" [ref=e105]
+            - cell "-" [ref=e106]
+            - cell "-" [ref=e107]
+            - cell "-" [ref=e108]
+            - cell "-" [ref=e109]
+            - cell "检测 切换" [ref=e110]:
+              - generic [ref=e111]:
+                - button "检测" [ref=e112] [cursor=pointer]
+                - button "切换" [disabled] [ref=e113]
+          - row "不可用 13 ms 219.100.37.193:443 日本 - - - - 检测 切换" [ref=e114]:
+            - cell "不可用" [ref=e115]:
+              - generic [ref=e116]: 不可用
+            - cell "13 ms" [ref=e117]
+            - cell "219.100.37.193:443" [ref=e118]
+            - cell "日本" [ref=e119]
+            - cell "-" [ref=e120]
+            - cell "-" [ref=e121]
+            - cell "-" [ref=e122]
+            - cell "-" [ref=e123]
+            - cell "检测 切换" [ref=e124]:
+              - generic [ref=e125]:
+                - button "检测" [ref=e126] [cursor=pointer]
+                - button "切换" [disabled] [ref=e127]
+          - row "不可用 171 ms 219.100.37.180:443 日本 - - - - 检测 切换" [ref=e128]:
+            - cell "不可用" [ref=e129]:
+              - generic [ref=e130]: 不可用
+            - cell "171 ms" [ref=e131]
+            - cell "219.100.37.180:443" [ref=e132]
+            - cell "日本" [ref=e133]
+            - cell "-" [ref=e134]
+            - cell "-" [ref=e135]
+            - cell "-" [ref=e136]
+            - cell "-" [ref=e137]
+            - cell "检测 切换" [ref=e138]:
+              - generic [ref=e139]:
+                - button "检测" [ref=e140] [cursor=pointer]
+                - button "切换" [disabled] [ref=e141]
+          - row "不可用 290 ms 219.100.37.9:443 日本 - - - - 检测 切换" [ref=e142]:
+            - cell "不可用" [ref=e143]:
+              - generic [ref=e144]: 不可用
+            - cell "290 ms" [ref=e145]
+            - cell "219.100.37.9:443" [ref=e146]
+            - cell "日本" [ref=e147]
+            - cell "-" [ref=e148]
+            - cell "-" [ref=e149]
+            - cell "-" [ref=e150]
+            - cell "-" [ref=e151]
+            - cell "检测 切换" [ref=e152]:
+              - generic [ref=e153]:
+                - button "检测" [ref=e154] [cursor=pointer]
+                - button "切换" [disabled] [ref=e155]
+          - row "不可用 327 ms 219.100.37.208:443 日本 - - - - 检测 切换" [ref=e156]:
+            - cell "不可用" [ref=e157]:
+              - generic [ref=e158]: 不可用
+            - cell "327 ms" [ref=e159]
+            - cell "219.100.37.208:443" [ref=e160]
+            - cell "日本" [ref=e161]
+            - cell "-" [ref=e162]
+            - cell "-" [ref=e163]
+            - cell "-" [ref=e164]
+            - cell "-" [ref=e165]
+            - cell "检测 切换" [ref=e166]:
+              - generic [ref=e167]:
+                - button "检测" [ref=e168] [cursor=pointer]
+                - button "切换" [disabled] [ref=e169]
+          - row "不可用 290 ms 219.100.37.1:443 日本 - - - - 检测 切换" [ref=e170]:
+            - cell "不可用" [ref=e171]:
+              - generic [ref=e172]: 不可用
+            - cell "290 ms" [ref=e173]
+            - cell "219.100.37.1:443" [ref=e174]
+            - cell "日本" [ref=e175]
+            - cell "-" [ref=e176]
+            - cell "-" [ref=e177]
+            - cell "-" [ref=e178]
+            - cell "-" [ref=e179]
+            - cell "检测 切换" [ref=e180]:
+              - generic [ref=e181]:
+                - button "检测" [ref=e182] [cursor=pointer]
+                - button "切换" [disabled] [ref=e183]
+          - row "不可用 296 ms 219.100.37.57:443 日本 - - - - 检测 切换" [ref=e184]:
+            - cell "不可用" [ref=e185]:
+              - generic [ref=e186]: 不可用
+            - cell "296 ms" [ref=e187]
+            - cell "219.100.37.57:443" [ref=e188]
+            - cell "日本" [ref=e189]
+            - cell "-" [ref=e190]
+            - cell "-" [ref=e191]
+            - cell "-" [ref=e192]
+            - cell "-" [ref=e193]
+            - cell "检测 切换" [ref=e194]:
+              - generic [ref=e195]:
+                - button "检测" [ref=e196] [cursor=pointer]
+                - button "切换" [disabled] [ref=e197]
+          - row "待检测 - 72.34.102.209:1746 美国 - - - - 检测 切换" [ref=e198]:
+            - cell "待检测" [ref=e199]:
+              - generic [ref=e200]: 待检测
+            - cell "-" [ref=e201]
+            - cell "72.34.102.209:1746" [ref=e202]
+            - cell "美国" [ref=e203]
+            - cell "-" [ref=e204]
+            - cell "-" [ref=e205]
+            - cell "-" [ref=e206]
+            - cell "-" [ref=e207]
+            - cell "检测 切换" [ref=e208]:
+              - generic [ref=e209]:
+                - button "检测" [ref=e210] [cursor=pointer]
+                - button "切换" [ref=e211] [cursor=pointer]
+      - generic [ref=e212]:
+        - generic [ref=e213]: 显示第 1 - 11 条，共 96 条备选节点
+        - generic [ref=e214]:
+          - button "首页" [disabled] [ref=e215]
+          - button "上一页" [disabled] [ref=e216]
+          - generic [ref=e217]:
+            - text: 页码
+            - strong [ref=e218]: "1"
+            - text: /
+            - strong [ref=e219]: "9"
+          - button "下一页" [ref=e220] [cursor=pointer]
+          - button "尾页" [ref=e221] [cursor=pointer]
+    - generic [ref=e222] [cursor=pointer]: VPS购买推荐

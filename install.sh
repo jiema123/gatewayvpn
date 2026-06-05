@@ -7,15 +7,31 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;36m'
 PLAIN='\033[0m'
 
-# 1. Check root permissions
-if [ "$(id -u)" != "0" ]; then
-    echo -e "${RED}错误: 必须以 root 权限运行此脚本。请使用: sudo bash $0${PLAIN}"
-    exit 1
-fi
-
-# 2. Check OS distribution and set package manager
+# 1. Check OS distribution and set package manager
 OS_TYPE=""
 PKG_MGR=""
+IS_DARWIN=0
+if [ "$(uname -s)" = "Darwin" ]; then
+    IS_DARWIN=1
+fi
+
+SUDO=""
+if [ "$(id -u)" != "0" ]; then
+    if [ "$IS_DARWIN" = "1" ]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo -e "${RED}错误: macOS 安装需要 sudo 写入服务文件。${PLAIN}"
+            exit 1
+        fi
+        SUDO="sudo"
+    else
+        echo -e "${RED}错误: 必须以 root 权限运行此脚本。请使用: sudo bash $0${PLAIN}"
+        exit 1
+    fi
+fi
+
+if [ "$IS_DARWIN" = "1" ]; then
+    PKG_MGR="brew"
+else
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS_TYPE=$ID
@@ -41,24 +57,36 @@ case "$OS_TYPE" in
         exit 1
         ;;
 esac
+fi
 
 echo -e "${BLUE}==========================================================${PLAIN}"
-echo -e "${BLUE}        欢迎使用 AimiliVPN 一键源码部署与管理脚本${PLAIN}"
+echo -e "${BLUE}        欢迎使用 GateWayVPN 一键源码部署与管理脚本${PLAIN}"
 echo -e "${BLUE}==========================================================${PLAIN}"
 
 # 3. Configure GitHub Repository URL
-# Default to the official repository (baoweise-bot/aimili-vpngate)
-DEFAULT_USER="baoweise-bot"
-DEFAULT_REPO="aimili-vpngate"
+# Default to the official repository (jiema123/gatewayvpn)
+DEFAULT_USER="jiema123"
+DEFAULT_REPO="gatewayvpn"
 
 # Allow custom repository override via command line arguments
 GITHUB_USER="${1:-${DEFAULT_USER}}"
 GITHUB_REPO="${2:-${DEFAULT_REPO}}"
 
 GITHUB_URL="https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
+BREW_RUNNER=""
+if [ "$IS_DARWIN" = "1" ] && [ "$(id -u)" = "0" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    BREW_RUNNER="sudo -u ${SUDO_USER}"
+fi
 
 echo -e "\n${YELLOW}[1/4] 正在安装系统基础依赖...${PLAIN}"
-if [ "$PKG_MGR" = "apt-get" ]; then
+if [ "$PKG_MGR" = "brew" ]; then
+    if ! command -v brew >/dev/null 2>&1; then
+        echo -e "${RED}错误: macOS 环境需要先安装 Homebrew。${PLAIN}"
+        exit 1
+    fi
+    echo -e "  -> 正在使用 Homebrew 安装依赖..."
+    ${BREW_RUNNER} brew install openvpn curl git python3
+elif [ "$PKG_MGR" = "apt-get" ]; then
     echo -e "  -> 正在运行 apt-get update 更新软件源清单..."
     apt-get update -q || true
     echo -e "  -> 正在运行 apt-get install 安装基础依赖包..."
@@ -81,7 +109,22 @@ elif [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
 fi
 
 # 4. Clone or pull the repository
-INSTALL_DIR="/opt/aimilivpn"
+INSTALL_DIR="/opt/gatewayvpn"
+if [ "$PKG_MGR" = "brew" ]; then
+    INSTALL_DIR="/usr/local/gatewayvpn"
+fi
+ML_BIN="/usr/bin/ml"
+PYTHON_BIN="/usr/bin/python3"
+SERVICE_KIND="manual"
+LAUNCHD_PLIST="/Library/LaunchDaemons/com.gatewayvpn.manager.plist"
+if [ "$IS_DARWIN" = "1" ]; then
+    ML_BIN="/usr/local/bin/ml"
+    PYTHON_BIN="$(command -v python3 || true)"
+    if [ -z "$PYTHON_BIN" ]; then
+        PYTHON_BIN="/opt/homebrew/bin/python3"
+    fi
+    SERVICE_KIND="launchd"
+fi
 # 默认部署分支（在 bate 分支设为 bate；在 main 分支设为 main）
 DEFAULT_DEPLOY_BRANCH="main"
 
@@ -93,6 +136,16 @@ fi
 DEPLOY_BRANCH="${CURRENT_BRANCH:-$DEFAULT_DEPLOY_BRANCH}"
 
 echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR} (目标分支: ${DEPLOY_BRANCH})...${PLAIN}"
+if [ "$IS_DARWIN" = "1" ]; then
+    if [ ! -d "${INSTALL_DIR}" ]; then
+        ${SUDO} mkdir -p "${INSTALL_DIR}"
+        if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+            ${SUDO} chown -R "${SUDO_USER}:staff" "${INSTALL_DIR}"
+        else
+            ${SUDO} chown -R "$(id -un):staff" "${INSTALL_DIR}" 2>/dev/null || true
+        fi
+    fi
+fi
 if [ -f "${INSTALL_DIR}/.local_dev" ]; then
     echo -e "${GREEN}检测到本地开发模式 (.local_dev)，跳过 git pull/reset 保持本地修改。${PLAIN}"
 else
@@ -131,11 +184,46 @@ fi
 
 # 5. Configure Service
 echo -e "\n${YELLOW}[3/4] 正在配置系统服务...${PLAIN}"
-if command -v systemctl >/dev/null 2>&1; then
-    echo -e "  -> 检测到 systemd，正在创建服务配置 /lib/systemd/system/aimilivpn.service ..."
-    cat > /lib/systemd/system/aimilivpn.service <<EOF
+if [ "$IS_DARWIN" = "1" ]; then
+    echo -e "  -> 检测到 macOS，正在创建 launchd 服务配置 ${LAUNCHD_PLIST} ..."
+    ${SUDO} mkdir -p /Library/LaunchDaemons "${INSTALL_DIR}/vpngate_data"
+    ${SUDO} tee "${LAUNCHD_PLIST}" >/dev/null <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gatewayvpn.manager</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${PYTHON_BIN}</string>
+        <string>${INSTALL_DIR}/vpngate_manager.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${INSTALL_DIR}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${INSTALL_DIR}/vpngate_data/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>${INSTALL_DIR}/vpngate_data/launchd.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin</string>
+    </dict>
+</dict>
+</plist>
+EOF
+    ${SUDO} chown root:wheel "${LAUNCHD_PLIST}"
+    ${SUDO} chmod 644 "${LAUNCHD_PLIST}"
+elif command -v systemctl >/dev/null 2>&1; then
+    echo -e "  -> 检测到 systemd，正在创建服务配置 /lib/systemd/system/gatewayvpn.service ..."
+    cat > /lib/systemd/system/gatewayvpn.service <<EOF
 [Unit]
-Description=AimiliVPN OpenVPN Manager with HTTP/SOCKS5 Proxy
+Description=GateWayVPN OpenVPN Manager with HTTP/SOCKS5 Proxy
 After=network.target
 
 [Service]
@@ -144,40 +232,43 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=/usr/bin/python3 vpngate_manager.py
 Restart=always
 RestartSec=5
-EnvironmentFile=-/etc/default/aimilivpn
+EnvironmentFile=-/etc/default/gatewayvpn
 
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable aimilivpn.service
+    systemctl enable gatewayvpn.service
+    SERVICE_KIND="systemd"
 elif command -v rc-service >/dev/null 2>&1; then
-    echo -e "  -> 检测到 OpenRC，正在创建服务配置 /etc/init.d/aimilivpn ..."
-    cat > /etc/init.d/aimilivpn <<EOF
+    echo -e "  -> 检测到 OpenRC，正在创建服务配置 /etc/init.d/gatewayvpn ..."
+    cat > /etc/init.d/gatewayvpn <<EOF
 #!/sbin/openrc-run
 
-description="AimiliVPN OpenVPN Manager with HTTP/SOCKS5 Proxy"
+description="GateWayVPN OpenVPN Manager with HTTP/SOCKS5 Proxy"
 command="/usr/bin/python3"
 command_args="${INSTALL_DIR}/vpngate_manager.py"
 command_background="yes"
 directory="${INSTALL_DIR}"
-pidfile="/run/aimilivpn.pid"
+pidfile="/run/gatewayvpn.pid"
 
 depend() {
     need net
     after firewall
 }
 EOF
-    chmod +x /etc/init.d/aimilivpn
-    rc-update add aimilivpn default
+    chmod +x /etc/init.d/gatewayvpn
+    rc-update add gatewayvpn default
+    SERVICE_KIND="openrc"
 else
     echo -e "${YELLOW}警告: 未能检测到 systemd 或 OpenRC，请手动管理服务。${PLAIN}"
 fi
 
 # 6. Configure global command shortcut "ml"
 echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'ml'...${PLAIN}"
-echo -e "  -> 正在写入管理脚本 /usr/bin/ml ..."
-cat > /usr/bin/ml <<'EOF'
+echo -e "  -> 正在写入管理脚本 ${ML_BIN} ..."
+${SUDO} mkdir -p "$(dirname "${ML_BIN}")"
+${SUDO} tee "${ML_BIN}" >/dev/null <<'EOF'
 #!/usr/bin/env python3
 import sys
 import os
@@ -188,8 +279,11 @@ import tty
 import termios
 import shutil
 
-INSTALL_DIR = "/opt/aimilivpn"
-LOG_FILE = "/opt/aimilivpn/vpngate_data/vpngate.log"
+INSTALL_DIR = "${INSTALL_DIR}"
+LOG_FILE = "${INSTALL_DIR}/vpngate_data/vpngate.log"
+SERVICE_KIND = "${SERVICE_KIND}"
+LAUNCHD_PLIST = "${LAUNCHD_PLIST}"
+LAUNCHD_LABEL = "com.gatewayvpn.manager"
 
 def generate_random_password():
     import random
@@ -207,7 +301,7 @@ def generate_random_suffix():
 
 def load_ui_cfg():
     import json
-    path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
+    path = os.path.join(INSTALL_DIR, "vpngate_data", "ui_auth.json")
     cfg = {"host": "::", "port": 8787, "secret_path": "EJsW2EeBo9lY", "password": ""}
     if os.path.exists(path):
         try:
@@ -221,7 +315,7 @@ def load_ui_cfg():
 
 def save_ui_cfg(cfg):
     import json
-    path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
+    path = os.path.join(INSTALL_DIR, "vpngate_data", "ui_auth.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -232,7 +326,7 @@ def save_ui_cfg(cfg):
 
 def load_state():
     import json
-    path = "/opt/aimilivpn/vpngate_data/state.json"
+    path = os.path.join(INSTALL_DIR, "vpngate_data", "state.json")
     state = {"active_openvpn_node_id": "", "last_check_message": "", "is_connecting": False}
     if os.path.exists(path):
         try:
@@ -246,7 +340,7 @@ def load_state():
 
 def get_active_node_info():
     import json
-    path = "/opt/aimilivpn/vpngate_data/nodes.json"
+    path = os.path.join(INSTALL_DIR, "vpngate_data", "nodes.json")
     state = load_state()
     active_id = state.get("active_openvpn_node_id")
     if not active_id:
@@ -286,7 +380,7 @@ def ping_ip(ip):
         return "无法连接"
 
 def get_public_ip():
-    path = "/opt/aimilivpn/vpngate_data/public_ip.txt"
+    path = os.path.join(INSTALL_DIR, "vpngate_data", "public_ip.txt")
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -326,7 +420,17 @@ def check_port_listening(port):
             pass
     return False
 
-def get_service_pid(service_name="aimilivpn.service"):
+def get_service_pid(service_name="gatewayvpn.service"):
+    if SERVICE_KIND == "launchd":
+        try:
+            res = subprocess.run(["pgrep", "-f", os.path.join(INSTALL_DIR, "vpngate_manager.py")], capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                pid = line.strip()
+                if pid:
+                    return pid
+        except Exception:
+            pass
+        return None
     try:
         for pid_dir in os.listdir('/proc'):
             if pid_dir.isdigit():
@@ -341,10 +445,16 @@ def get_service_pid(service_name="aimilivpn.service"):
         pass
     return None
 
-def check_service_active(service_name="aimilivpn.service"):
+def check_service_active(service_name="gatewayvpn.service"):
     return get_service_pid(service_name) is not None
 
 def check_openvpn_process():
+    if SERVICE_KIND == "launchd":
+        try:
+            res = subprocess.run(["pgrep", "-x", "openvpn"], capture_output=True, text=True)
+            return res.returncode == 0 and bool(res.stdout.strip())
+        except Exception:
+            return False
     try:
         for pid_dir in os.listdir('/proc'):
             if pid_dir.isdigit():
@@ -389,9 +499,9 @@ def print_status():
     is_connecting = state.get("is_connecting", False)
     
     gateway_ok = check_port_listening(proxy_port)
-    service_ok = check_service_active("aimilivpn.service")
+    service_ok = check_service_active("gatewayvpn.service")
     openvpn_ok = check_openvpn_process()
-    pid = get_service_pid("aimilivpn.service")
+    pid = get_service_pid("gatewayvpn.service")
     
     active_ip, active_loc = get_active_node_info()
     latency = state.get("active_node_latency", "测试中...") if active_ip else "无活动连接"
@@ -412,7 +522,7 @@ def print_status():
         openvpn_status = f"{green}[已连接]{reset}" if openvpn_ok else f"{red}[未连接]{reset}"
     
     print_line("=======================================================")
-    print_line(f"               {bold}AimiliVPN 管理终端 v2.0{reset}                  ")
+    print_line(f"               {bold}GateWayVPN 管理终端 v2.0{reset}                  ")
     print_line("=======================================================")
     print_line("【核心服务状态】")
     print_line(format_line(f"代理网关 (Port {proxy_port})", gateway_status))
@@ -478,33 +588,43 @@ def print_status():
     print_line("=======================================================")
 
 def run_service_cmd(cmd):
-    if shutil.which("systemctl"):
-        subprocess.run(["systemctl", cmd, "aimilivpn.service"])
+    if SERVICE_KIND == "launchd":
+        prefix = []
+        if os.geteuid() != 0 and shutil.which("sudo"):
+            prefix = ["sudo"]
+        if cmd in ("stop", "restart"):
+            subprocess.run(prefix + ["launchctl", "bootout", "system", LAUNCHD_PLIST], stderr=subprocess.DEVNULL)
+        if cmd in ("start", "restart"):
+            subprocess.run(prefix + ["launchctl", "bootstrap", "system", LAUNCHD_PLIST])
+            subprocess.run(prefix + ["launchctl", "enable", f"system/{LAUNCHD_LABEL}"], stderr=subprocess.DEVNULL)
+            subprocess.run(prefix + ["launchctl", "kickstart", "-k", f"system/{LAUNCHD_LABEL}"], stderr=subprocess.DEVNULL)
+    elif shutil.which("systemctl"):
+        subprocess.run(["systemctl", cmd, "gatewayvpn.service"])
     elif shutil.which("rc-service"):
-        subprocess.run(["rc-service", "aimilivpn", cmd])
+        subprocess.run(["rc-service", "gatewayvpn", cmd])
     else:
-        print("未检测到支持的服务管理器 (systemd/OpenRC)")
+        print("未检测到支持的服务管理器 (launchd/systemd/OpenRC)")
 
 def start_service():
-    print("正在启动 AimiliVPN 服务...", flush=True)
+    print("正在启动 GateWayVPN 服务...", flush=True)
     run_service_cmd("start")
     print("已发送启动指令。")
     time.sleep(1)
 
 def stop_service():
-    print("正在停止 AimiliVPN 服务...", flush=True)
+    print("正在停止 GateWayVPN 服务...", flush=True)
     run_service_cmd("stop")
     print("已发送停止指令。")
     time.sleep(1)
 
 def restart_service():
-    print("正在重启 AimiliVPN 服务...", flush=True)
+    print("正在重启 GateWayVPN 服务...", flush=True)
     run_service_cmd("restart")
     print("已发送重启指令。")
     time.sleep(1)
 
 def show_logs():
-    print("正在查看 AimiliVPN 日志 (按 Ctrl+C 退出)...", flush=True)
+    print("正在查看 GateWayVPN 日志 (按 Ctrl+C 退出)...", flush=True)
     if os.path.exists(LOG_FILE):
         try:
             subprocess.run(["tail", "-f", "-n", "50", LOG_FILE])
@@ -575,28 +695,34 @@ def update_service():
         time.sleep(2)
 
 def uninstall_service():
-    confirm = input("确定要完全卸载 AimiliVPN 吗？(y/N): ")
+    confirm = input("确定要完全卸载 GateWayVPN 吗？(y/N): ")
     if confirm.lower() == 'y':
-        print("正在完全卸载 AimiliVPN...", flush=True)
+        print("正在完全卸载 GateWayVPN...", flush=True)
         stop_service()
         if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "disable", "aimilivpn.service"])
+            subprocess.run(["systemctl", "disable", "gatewayvpn.service"])
             try:
-                os.unlink("/lib/systemd/system/aimilivpn.service")
+                os.unlink("/lib/systemd/system/gatewayvpn.service")
             except Exception:
                 pass
         elif shutil.which("rc-service"):
-            subprocess.run(["rc-update", "del", "aimilivpn"])
+            subprocess.run(["rc-update", "del", "gatewayvpn"])
             try:
-                os.unlink("/etc/init.d/aimilivpn")
+                os.unlink("/etc/init.d/gatewayvpn")
+            except Exception:
+                pass
+        elif SERVICE_KIND == "launchd":
+            subprocess.run(["launchctl", "bootout", "system", LAUNCHD_PLIST], stderr=subprocess.DEVNULL)
+            try:
+                os.unlink(LAUNCHD_PLIST)
             except Exception:
                 pass
         try:
-            os.unlink("/usr/bin/ml")
+            os.unlink("${ML_BIN}")
         except Exception:
             pass
         subprocess.run(["rm", "-rf", INSTALL_DIR])
-        print("AimiliVPN 已卸载！")
+        print("GateWayVPN 已卸载！")
         sys.exit(0)
     else:
         print("已取消卸载。")
@@ -605,7 +731,7 @@ def uninstall_service():
 def ask_restart():
     ans = input("配置已保存。是否立即重启服务生效？(Y/n): ").strip().lower()
     if ans in ('', 'y', 'yes'):
-        print("正在重启 AimiliVPN 服务...", flush=True)
+        print("正在重启 GateWayVPN 服务...", flush=True)
         restart_service()
         print("服务已重启。")
         time.sleep(1.5)
@@ -815,13 +941,13 @@ def get_status_state():
         state.get("proxy_latency_ms", 0),
         state.get("proxy_ok", False),
         check_port_listening(proxy_port),
-        check_service_active("aimilivpn.service"),
+        check_service_active("gatewayvpn.service"),
         check_openvpn_process(),
-        get_service_pid("aimilivpn.service")
+        get_service_pid("gatewayvpn.service")
     )
 
 def main():
-    if os.geteuid() != 0:
+    if os.geteuid() != 0 and SERVICE_KIND != "launchd":
         print("错误: 必须以 root 权限运行此命令。")
         sys.exit(1)
         
@@ -949,11 +1075,27 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-chmod +x /usr/bin/ml
+${SUDO} "${PYTHON_BIN}" - "${ML_BIN}" "${INSTALL_DIR}" "${SERVICE_KIND}" "${LAUNCHD_PLIST}" "${ML_BIN}" <<'PY'
+import pathlib
+import sys
+
+path, install_dir, service_kind, launchd_plist, ml_bin = sys.argv[1:]
+target = pathlib.Path(path)
+text = target.read_text(encoding="utf-8")
+text = text.replace("${INSTALL_DIR}", install_dir)
+text = text.replace("${SERVICE_KIND}", service_kind)
+text = text.replace("${LAUNCHD_PLIST}", launchd_plist)
+text = text.replace("${ML_BIN}", ml_bin)
+target.write_text(text, encoding="utf-8")
+PY
+${SUDO} chmod +x "${ML_BIN}"
 
 # 7. Configure Custom parameters (First-time installation check)
 AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
-mkdir -p "${INSTALL_DIR}/vpngate_data"
+${SUDO} mkdir -p "${INSTALL_DIR}/vpngate_data"
+if [ "$IS_DARWIN" = "1" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    ${SUDO} chown -R "${SUDO_USER}:staff" "${INSTALL_DIR}/vpngate_data"
+fi
 
 if [ ! -f "$AUTH_FILE" ]; then
     echo -e "\n${YELLOW}检测到是首次安装，是否需要自定义配置网页端参数（端口/安全后缀/登录账号密码）？${PLAIN}"
@@ -1051,13 +1193,16 @@ fi
 
 # 8. Start service
 # 8.5 Optimize network parameters (rp_filter for policy routing)
+if [ "$IS_DARWIN" = "1" ]; then
+    echo -e "\n检测到 macOS，跳过 Linux rp_filter/sysctl 策略路由优化。"
+else
 echo -e "\n正在优化网络参数 (配置反向路径过滤 rp_filter=2 以支持策略路由)..."
 if [ -d "/etc/sysctl.d" ]; then
-    cat > /etc/sysctl.d/99-aimilivpn.conf <<EOF
+    cat > /etc/sysctl.d/99-gatewayvpn.conf <<EOF
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
 EOF
-    sysctl -p /etc/sysctl.d/99-aimilivpn.conf >/dev/null 2>&1 || true
+    sysctl -p /etc/sysctl.d/99-gatewayvpn.conf >/dev/null 2>&1 || true
 else
     # Fallback to appending to /etc/sysctl.conf
     if ! grep -q "net.ipv4.conf.all.rp_filter" /etc/sysctl.conf; then
@@ -1079,16 +1224,22 @@ if [ -d "/proc/sys/net/ipv4/conf" ]; then
         sysctl -w net.ipv4.conf.${dev_name}.rp_filter=2 >/dev/null 2>&1 || true
     done
 fi
+fi
 
-echo -e "\n正在启动 AimiliVPN 服务并初始化网络..."
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart aimilivpn.service || true
+echo -e "\n正在启动 GateWayVPN 服务并初始化网络..."
+if [ "$IS_DARWIN" = "1" ]; then
+    ${SUDO} launchctl bootout system "${LAUNCHD_PLIST}" >/dev/null 2>&1 || true
+    ${SUDO} launchctl bootstrap system "${LAUNCHD_PLIST}" || true
+    ${SUDO} launchctl enable "system/com.gatewayvpn.manager" >/dev/null 2>&1 || true
+    ${SUDO} launchctl kickstart -k "system/com.gatewayvpn.manager" >/dev/null 2>&1 || true
+elif command -v systemctl >/dev/null 2>&1; then
+    systemctl restart gatewayvpn.service || true
 elif command -v rc-service >/dev/null 2>&1; then
-    rc-service aimilivpn restart || true
+    rc-service gatewayvpn restart || true
 fi
 
 # Wait and poll for node loading and active connection
-echo -e "\n正在等待 AimiliVPN 首次获取节点并建立加密通道 (此过程可能需要 5-30 秒)..."
+echo -e "\n正在等待 GateWayVPN 首次获取节点并建立加密通道 (此过程可能需要 5-30 秒)..."
 ACTIVE_ID=""
 LAST_MSG=""
 for i in {1..90}; do
@@ -1134,6 +1285,10 @@ if [ -f "$AUTH_FILE" ]; then
     UI_PORT=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('port', 8787))" 2>/dev/null || echo "8787")
 fi
 
+if [ "$IS_DARWIN" = "1" ]; then
+    PUBLIC_IP="127.0.0.1"
+    PUBLIC_IPV6=""
+else
 # Get VPS public IP
 echo -e "正在获取 VPS 公网 IP..."
 PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org || curl -s --max-time 3 https://ifconfig.me || curl -s --max-time 3 icanhazip.com || echo "您的服务器公网IP")
@@ -1142,9 +1297,10 @@ echo -n "$PUBLIC_IP" > "${INSTALL_DIR}/vpngate_data/public_ip.txt"
 # Get VPS public IPv6
 echo -e "正在获取 VPS 公网 IPv6..."
 PUBLIC_IPV6=$(curl -6 -s --max-time 3 https://api.ipify.org || curl -6 -s --max-time 3 https://ifconfig.me || curl -6 -s --max-time 3 icanhazip.com || echo "")
+fi
 
 echo -e "\n${GREEN}==========================================================${PLAIN}"
-echo -e "${GREEN}             AimiliVPN 源码一键部署已完成！${PLAIN}"
+echo -e "${GREEN}             GateWayVPN 源码一键部署已完成！${PLAIN}"
 echo -e "${GREEN}==========================================================${PLAIN}"
 echo -e "  * 网页控制面板:  ${BLUE}http://${PUBLIC_IP}:${UI_PORT}/${SECRET_PATH}/${PLAIN}"
 if [ -n "$PUBLIC_IPV6" ]; then
