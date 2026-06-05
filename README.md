@@ -11,15 +11,12 @@ GateWayVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VP
 
 ### 📢 官方交流与反馈
 [![Telegram](https://img.shields.io/badge/TG交流群-加入讨论-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://t.me/+dVMJYMHj5O1jM2Q9)
-[![Forum](https://img.shields.io/badge/交流论坛-339936.xyz-orange?style=flat-square&logo=discourse&logoColor=white)](https://339936.xyz)
-[![YouTube](https://img.shields.io/badge/视频教程-YouTube-red?style=flat-square&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=s-ATfXR8BpI)
-[![Email](https://img.shields.io/badge/Bug反馈-yaohunse7@gmail.com-red?style=flat-square&logo=gmail&logoColor=white)](mailto:yaohunse7@gmail.com)
 
 ---
 
 ### 演示效果
+[![演示效果](https://img.justnow.uk/2026/06/89a94a1470fcf632310d1ab2de77f53c.png)](https://share.21588.org/-PR3hhSDeRv/gatewayvpn-test.mp4)
 
-<video src="https://share.21588.org/-PR3hhSDeRv/gatewayvpn-test.mp4" controls width="800"></video>
 
 ### 🚀 一键极速部署 (支持 Debian/Ubuntu/CentOS/Alpine Linux 与 macOS)
 
