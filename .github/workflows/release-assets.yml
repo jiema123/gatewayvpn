@@ -1,0 +1,78 @@
+name: Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag name, for example main or bate
+        required: true
+        default: main
+  push:
+    tags:
+      - "main"
+      - "bate"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target_os: linux
+            target_arch: x86_64
+          - runner: macos-14
+            target_os: darwin
+            target_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_VERSION: ${{ github.event.inputs.release_tag || github.ref_name }}
+      TARGET_OS: ${{ matrix.target_os }}
+      TARGET_ARCH: ${{ matrix.target_arch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install OpenVPN
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y openvpn
+
+      - name: Install OpenVPN
+        if: runner.os == 'macOS'
+        run: brew install openvpn
+
+      - name: Build release package
+        run: bash scripts/build-release.sh
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gatewayvpn-${{ env.RELEASE_VERSION }}-${{ matrix.target_os }}-${{ matrix.target_arch }}
+          path: dist/gatewayvpn-${{ env.RELEASE_VERSION }}-${{ matrix.target_os }}-${{ matrix.target_arch }}.tar.gz
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_VERSION: ${{ github.event.inputs.release_tag || github.ref_name }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: ${{ env.RELEASE_VERSION }}
+          files: release-artifacts/*/*.tar.gz
+          make_latest: false

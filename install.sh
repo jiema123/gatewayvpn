@@ -71,8 +71,11 @@ DEFAULT_REPO="gatewayvpn"
 # Allow custom repository override via command line arguments
 GITHUB_USER="${1:-${DEFAULT_USER}}"
 GITHUB_REPO="${2:-${DEFAULT_REPO}}"
+ARG_DEPLOY_BRANCH="${3:-}"
 
 GITHUB_URL="https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
+GITHUB_ARCHIVE_URL=""
+GITHUB_RELEASE_PACKAGE_URL=""
 BREW_RUNNER=""
 if [ "$IS_DARWIN" = "1" ] && [ "$(id -u)" = "0" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     BREW_RUNNER="sudo -u ${SUDO_USER}"
@@ -85,18 +88,18 @@ if [ "$PKG_MGR" = "brew" ]; then
         exit 1
     fi
     echo -e "  -> 正在使用 Homebrew 安装依赖..."
-    ${BREW_RUNNER} brew install openvpn curl git python3
+    ${BREW_RUNNER} brew install openvpn curl python3
 elif [ "$PKG_MGR" = "apt-get" ]; then
     echo -e "  -> 正在运行 apt-get update 更新软件源清单..."
     apt-get update -q || true
     echo -e "  -> 正在运行 apt-get install 安装基础依赖包..."
-    apt-get install -y openvpn curl git ca-certificates iptables iproute2 psmisc python3
+    apt-get install -y openvpn curl ca-certificates iptables iproute2 psmisc python3
 elif [ "$PKG_MGR" = "apk" ]; then
     echo -e "  -> 正在运行 apk update 更新软件源清单..."
     apk update || true
     echo -e "  -> 正在运行 apk add 安装基础依赖包..."
     # bash is required for this script itself and some internal logic
-    apk add openvpn curl git ca-certificates iptables iproute2 psmisc python3 bash
+    apk add openvpn curl ca-certificates iptables iproute2 psmisc python3 bash
 elif [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
     echo -e "  -> 正在运行 $PKG_MGR 安装基础依赖包..."
     if [ "$OS_TYPE" != "fedora" ]; then
@@ -104,17 +107,21 @@ elif [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
         $PKG_MGR install -y epel-release || true
     fi
     # Try installing packages. Note: iproute or iproute2
-    $PKG_MGR install -y openvpn curl git ca-certificates iptables iproute psmisc python3 || \
-    $PKG_MGR install -y openvpn curl git ca-certificates iptables iproute2 psmisc python3
+    $PKG_MGR install -y openvpn curl ca-certificates iptables iproute psmisc python3 || \
+    $PKG_MGR install -y openvpn curl ca-certificates iptables iproute2 psmisc python3
 fi
 
-# 4. Clone or pull the repository
+# 4. Install source package
 INSTALL_DIR="/opt/gatewayvpn"
 if [ "$PKG_MGR" = "brew" ]; then
-    INSTALL_DIR="/usr/local/gatewayvpn"
+    INSTALL_USER="${SUDO_USER:-$(id -un)}"
+    INSTALL_HOME="$(eval echo "~${INSTALL_USER}")"
+    INSTALL_DIR="${INSTALL_HOME}/gatewayvpn"
 fi
+APP_BIN="${INSTALL_DIR}/bin/gatewayvpn-manager"
 ML_BIN="/usr/bin/ml"
 PYTHON_BIN="/usr/bin/python3"
+OPENVPN_BIN="$(command -v openvpn || true)"
 SERVICE_KIND="manual"
 LAUNCHD_PLIST="/Library/LaunchDaemons/com.gatewayvpn.manager.plist"
 if [ "$IS_DARWIN" = "1" ]; then
@@ -123,64 +130,173 @@ if [ "$IS_DARWIN" = "1" ]; then
     if [ -z "$PYTHON_BIN" ]; then
         PYTHON_BIN="/opt/homebrew/bin/python3"
     fi
+    if [ -z "$OPENVPN_BIN" ]; then
+        for candidate in /usr/local/sbin/openvpn /opt/homebrew/sbin/openvpn /usr/sbin/openvpn; do
+            if [ -x "$candidate" ]; then
+                OPENVPN_BIN="$candidate"
+                break
+            fi
+        done
+    fi
     SERVICE_KIND="launchd"
 fi
-# 默认部署分支（在 bate 分支设为 bate；在 main 分支设为 main）
-DEFAULT_DEPLOY_BRANCH="main"
-
-# 自动检测本地已安装版本当前所在的分支
-CURRENT_BRANCH=""
-if [ -d "${INSTALL_DIR}/.git" ]; then
-    CURRENT_BRANCH=$(cd "${INSTALL_DIR}" && git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ -z "$OPENVPN_BIN" ]; then
+    OPENVPN_BIN="openvpn"
 fi
-DEPLOY_BRANCH="${CURRENT_BRANCH:-$DEFAULT_DEPLOY_BRANCH}"
+# 默认部署分支（在 bate 分支设为 bate；在 main 分支设为 main）
+DEFAULT_DEPLOY_BRANCH="${ARG_DEPLOY_BRANCH:-${GATEWAYVPN_BRANCH:-main}}"
 
-echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR} (目标分支: ${DEPLOY_BRANCH})...${PLAIN}"
+DEPLOY_BRANCH="${DEFAULT_DEPLOY_BRANCH}"
+GITHUB_ARCHIVE_URL="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/refs/heads/${DEPLOY_BRANCH}.tar.gz"
+
+UNAME_S="$(uname -s)"
+UNAME_M="$(uname -m)"
+case "$UNAME_S" in
+    Darwin) RELEASE_OS="darwin" ;;
+    Linux) RELEASE_OS="linux" ;;
+    *) RELEASE_OS="$(printf '%s' "$UNAME_S" | tr '[:upper:]' '[:lower:]')" ;;
+esac
+case "$UNAME_M" in
+    x86_64|amd64) RELEASE_ARCH="x86_64" ;;
+    arm64|aarch64) RELEASE_ARCH="arm64" ;;
+    *) RELEASE_ARCH="$UNAME_M" ;;
+esac
+RELEASE_PACKAGE_NAME="gatewayvpn-${DEPLOY_BRANCH}-${RELEASE_OS}-${RELEASE_ARCH}.tar.gz"
+GITHUB_RELEASE_PACKAGE_URL="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/releases/download/${DEPLOY_BRANCH}/${RELEASE_PACKAGE_NAME}"
+
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+SOURCE_DIR=""
+if [ "${GATEWAYVPN_FORCE_REMOTE:-0}" != "1" ] && [ -n "$SCRIPT_DIR" ] && [ -f "${SCRIPT_DIR}/vpngate_manager.py" ] && [ -f "${SCRIPT_DIR}/vpn_utils.py" ]; then
+    SOURCE_DIR="$SCRIPT_DIR"
+fi
+
+copy_source_to_install_dir() {
+    src="$1"
+    dst="$2"
+    if [ "$src" = "$dst" ]; then
+        echo -e "  -> 安装源与目标目录相同，跳过复制。"
+        return 0
+    fi
+    ${SUDO} mkdir -p "$dst" "$dst/vpngate_data"
+    if command -v rsync >/dev/null 2>&1; then
+        ${SUDO} rsync -a --delete \
+            --exclude ".git" \
+            --exclude ".local_dev" \
+            --exclude "vpngate_data/" \
+            --filter "protect vpngate_data/***" \
+            --exclude "__pycache__" \
+            "$src"/ "$dst"/
+    else
+        tmp_copy_dir="$(mktemp -d)"
+        (cd "$src" && tar --exclude ".git" --exclude ".local_dev" --exclude "vpngate_data" --exclude "__pycache__" -cf - .) | (cd "$tmp_copy_dir" && tar -xf -)
+        ${SUDO} cp -R "$tmp_copy_dir"/. "$dst"/
+        rm -rf "$tmp_copy_dir"
+    fi
+}
+
+build_app_binary() {
+    src_dir="$1"
+    if [ ! -x "${src_dir}/scripts/build-binary.sh" ]; then
+        if [ ! -f "${src_dir}/scripts/build-binary.sh" ]; then
+            echo -e "${RED}  -> 错误: 未找到打包脚本 scripts/build-binary.sh${PLAIN}"
+            return 1
+        fi
+        chmod +x "${src_dir}/scripts/build-binary.sh"
+    fi
+    echo -e "  -> 正在构建可执行应用..."
+    if ! (cd "$src_dir" && bash ./scripts/build-binary.sh); then
+        echo -e "${RED}  -> 错误: 可执行应用构建失败，请检查本机 Python 打包环境。${PLAIN}"
+        return 1
+    fi
+}
+
+compute_expected_build_id() {
+    src_dir="$1"
+    (
+        cd "$src_dir"
+        shasum app_runtime.py vpngate_manager.py vpn_utils.py proxy_server.py scripts/build-binary.sh
+    ) | shasum | awk '{print $1}'
+}
+
+ensure_fresh_binary() {
+    src_dir="$1"
+    expected_build_id="$(compute_expected_build_id "$src_dir")"
+    current_build_id=""
+    if [ -f "${src_dir}/bin/gatewayvpn-manager.build-id" ]; then
+        current_build_id="$(tr -d '[:space:]' < "${src_dir}/bin/gatewayvpn-manager.build-id")"
+    fi
+    if [ ! -x "${src_dir}/bin/gatewayvpn-manager" ] || [ "$current_build_id" != "$expected_build_id" ]; then
+        build_app_binary "$src_dir"
+    fi
+}
+
+download_and_extract_package() {
+    package_url="$1"
+    target_archive="$2"
+    target_dir="$3"
+    if ! curl -L --fail --retry 3 -o "$target_archive" "$package_url"; then
+        return 1
+    fi
+    tar -xzf "$target_archive" -C "$target_dir"
+    return 0
+}
+
+echo -e "\n${YELLOW}[2/4] 正在部署 GateWayVPN 到 ${INSTALL_DIR} (目标分支: ${DEPLOY_BRANCH})...${PLAIN}"
 if [ "$IS_DARWIN" = "1" ]; then
     if [ ! -d "${INSTALL_DIR}" ]; then
-        ${SUDO} mkdir -p "${INSTALL_DIR}"
-        if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-            ${SUDO} chown -R "${SUDO_USER}:staff" "${INSTALL_DIR}"
-        else
-            ${SUDO} chown -R "$(id -un):staff" "${INSTALL_DIR}" 2>/dev/null || true
-        fi
+        mkdir -p "${INSTALL_DIR}"
     fi
 fi
-if [ -f "${INSTALL_DIR}/.local_dev" ]; then
-    echo -e "${GREEN}检测到本地开发模式 (.local_dev)，跳过 git pull/reset 保持本地修改。${PLAIN}"
+if [ -n "$SOURCE_DIR" ]; then
+    echo -e "  -> 检测到本地部署包，正在从 ${SOURCE_DIR} 安装..."
+    ensure_fresh_binary "$SOURCE_DIR"
+    copy_source_to_install_dir "$SOURCE_DIR" "$INSTALL_DIR"
 else
-    if [ -d "${INSTALL_DIR}" ]; then
-        echo -e "  -> 目录 ${INSTALL_DIR} 已存在，正在更新并强制覆盖本地源码..."
-        cd "${INSTALL_DIR}"
-        git fetch --all || true
-        git checkout "${DEPLOY_BRANCH}" || git checkout -b "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}" || true
-        echo -e "  -> 正在强制重置本地源码至 origin/${DEPLOY_BRANCH} ..."
-        if git reset --hard "origin/${DEPLOY_BRANCH}"; then
-            echo -e "${GREEN}  -> 源码更新成功！${PLAIN}"
-        else
-            if git pull origin "${DEPLOY_BRANCH}"; then
-                echo -e "${GREEN}  -> 源码更新成功！${PLAIN}"
-            else
-                echo -e "${YELLOW}  -> 警告: git pull/reset 失败，将保留当前本地源码并继续安装。${PLAIN}"
-            fi
-        fi
+    echo -e "  -> 未检测到本地部署包，优先下载 GitHub Release 预构建资产 ${RELEASE_PACKAGE_NAME} ..."
+    TMP_DIR="$(mktemp -d)"
+    ARCHIVE_FILE="${TMP_DIR}/gatewayvpn.tar.gz"
+    if download_and_extract_package "$GITHUB_RELEASE_PACKAGE_URL" "$ARCHIVE_FILE" "$TMP_DIR"; then
+        echo -e "${GREEN}  -> 已下载 Release 预构建资产。${PLAIN}"
     else
-        echo -e "  -> 正在克隆 GitHub 仓库 ${GITHUB_URL} (分支: ${DEPLOY_BRANCH}) ..."
-        if git clone -b "${DEPLOY_BRANCH}" "${GITHUB_URL}" "${INSTALL_DIR}"; then
-            echo -e "${GREEN}  -> 克隆成功！${PLAIN}"
-        else
-            echo -e "  -> 尝试默认克隆..."
-            if git clone "${GITHUB_URL}" "${INSTALL_DIR}"; then
-                cd "${INSTALL_DIR}"
-                git checkout "${DEPLOY_BRANCH}" || git checkout -b "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}" || true
-                echo -e "${GREEN}  -> 克隆成功！${PLAIN}"
-            else
-                echo -e "${RED}  -> 错误: 无法克隆仓库 ${GITHUB_URL}，请检查网络！${PLAIN}"
-                exit 1
-            fi
+        echo -e "${YELLOW}  -> 未找到对应 Release 资产，回退到源码包并在本机构建二进制...${PLAIN}"
+        rm -f "$ARCHIVE_FILE"
+        if ! download_and_extract_package "$GITHUB_ARCHIVE_URL" "$ARCHIVE_FILE" "$TMP_DIR"; then
+            echo -e "${RED}  -> 错误: 无法下载 Release 资产或源码包，请检查网络、分支或 Release 发布状态。${PLAIN}"
+            rm -rf "$TMP_DIR"
+            exit 1
         fi
     fi
+    EXTRACTED_DIR="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    if [ -z "$EXTRACTED_DIR" ] || [ ! -f "${EXTRACTED_DIR}/install.sh" ]; then
+        echo -e "${RED}  -> 错误: 部署包内容不完整。${PLAIN}"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    ensure_fresh_binary "$EXTRACTED_DIR"
+    copy_source_to_install_dir "$EXTRACTED_DIR" "$INSTALL_DIR"
+    rm -rf "$TMP_DIR"
 fi
+
+if [ ! -x "${APP_BIN}" ]; then
+    echo -e "${RED}  -> 错误: 未找到可执行应用 ${APP_BIN}${PLAIN}"
+    exit 1
+fi
+
+if [ "$IS_DARWIN" = "1" ]; then
+    ${SUDO} mkdir -p "${INSTALL_DIR}/vpngate_data"
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        ${SUDO} chown -R "${SUDO_USER}:staff" "${INSTALL_DIR}"
+    else
+        ${SUDO} chown -R "$(id -un):staff" "${INSTALL_DIR}" 2>/dev/null || true
+    fi
+else
+    mkdir -p "${INSTALL_DIR}/vpngate_data"
+fi
+echo -e "${GREEN}  -> 部署包安装完成！${PLAIN}"
 
 # 5. Configure Service
 echo -e "\n${YELLOW}[3/4] 正在配置系统服务...${PLAIN}"
@@ -196,8 +312,7 @@ if [ "$IS_DARWIN" = "1" ]; then
     <string>com.gatewayvpn.manager</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${PYTHON_BIN}</string>
-        <string>${INSTALL_DIR}/vpngate_manager.py</string>
+        <string>${APP_BIN}</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${INSTALL_DIR}</string>
@@ -212,7 +327,9 @@ if [ "$IS_DARWIN" = "1" ]; then
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin</string>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/sbin:/usr/sbin</string>
+        <key>OPENVPN_CMD</key>
+        <string>${OPENVPN_BIN}</string>
     </dict>
 </dict>
 </plist>
@@ -229,9 +346,10 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=/usr/bin/python3 vpngate_manager.py
+ExecStart=${APP_BIN}
 Restart=always
 RestartSec=5
+Environment=OPENVPN_CMD=${OPENVPN_BIN}
 EnvironmentFile=-/etc/default/gatewayvpn
 
 [Install]
@@ -246,8 +364,7 @@ elif command -v rc-service >/dev/null 2>&1; then
 #!/sbin/openrc-run
 
 description="GateWayVPN OpenVPN Manager with HTTP/SOCKS5 Proxy"
-command="/usr/bin/python3"
-command_args="${INSTALL_DIR}/vpngate_manager.py"
+command="${APP_BIN}"
 command_background="yes"
 directory="${INSTALL_DIR}"
 pidfile="/run/gatewayvpn.pid"
@@ -280,10 +397,15 @@ import termios
 import shutil
 
 INSTALL_DIR = "${INSTALL_DIR}"
+APP_BIN = "${APP_BIN}"
 LOG_FILE = "${INSTALL_DIR}/vpngate_data/vpngate.log"
 SERVICE_KIND = "${SERVICE_KIND}"
 LAUNCHD_PLIST = "${LAUNCHD_PLIST}"
 LAUNCHD_LABEL = "com.gatewayvpn.manager"
+GITHUB_USER = "${GITHUB_USER}"
+GITHUB_REPO = "${GITHUB_REPO}"
+DEPLOY_BRANCH = "${DEPLOY_BRANCH}"
+UPDATE_ARCHIVE_URL = "${GITHUB_ARCHIVE_URL}"
 
 def generate_random_password():
     import random
@@ -423,7 +545,7 @@ def check_port_listening(port):
 def get_service_pid(service_name="gatewayvpn.service"):
     if SERVICE_KIND == "launchd":
         try:
-            res = subprocess.run(["pgrep", "-f", os.path.join(INSTALL_DIR, "vpngate_manager.py")], capture_output=True, text=True)
+            res = subprocess.run(["pgrep", "-f", APP_BIN], capture_output=True, text=True)
             for line in res.stdout.splitlines():
                 pid = line.strip()
                 if pid:
@@ -437,7 +559,7 @@ def get_service_pid(service_name="gatewayvpn.service"):
                 try:
                     with open(os.path.join('/proc', pid_dir, 'cmdline'), 'r') as f:
                         cmd = f.read()
-                        if 'vpngate_manager.py' in cmd:
+                        if APP_BIN in cmd or 'gatewayvpn-manager' in cmd:
                             return pid_dir
                 except Exception:
                     continue
@@ -499,6 +621,7 @@ def print_status():
     is_connecting = state.get("is_connecting", False)
     
     gateway_ok = check_port_listening(proxy_port)
+    ui_ok = check_port_listening(ui_port)
     service_ok = check_service_active("gatewayvpn.service")
     openvpn_ok = check_openvpn_process()
     pid = get_service_pid("gatewayvpn.service")
@@ -513,6 +636,7 @@ def print_status():
     yellow = "\033[1;33m"
     
     backend_status = f"{green}[已激活] (PID: {pid}){reset}" if (service_ok and pid) else f"{red}[未启动]{reset}"
+    ui_status = f"{green}[已激活]{reset}" if ui_ok else f"{red}[未启动]{reset}"
     
     if is_connecting:
         gateway_status = f"{yellow}[切换中...]{reset}"
@@ -526,7 +650,8 @@ def print_status():
     print_line("=======================================================")
     print_line("【核心服务状态】")
     print_line(format_line(f"代理网关 (Port {proxy_port})", gateway_status))
-    print_line(format_line(f"管理后台 (Port {ui_port})", backend_status))
+    print_line(format_line("服务进程", backend_status))
+    print_line(format_line(f"管理后台 (Port {ui_port})", ui_status))
     print_line(format_line("连接核心 (OpenVPN)", openvpn_status))
     
     host_cfg = cfg.get("host", "::")
@@ -635,64 +760,41 @@ def show_logs():
         time.sleep(2)
 
 def update_service():
-    print("正在获取远程更新并检测版本...", flush=True)
-    if os.path.exists(INSTALL_DIR):
-        try:
-            os.chdir(INSTALL_DIR)
-            if not os.path.exists(".git"):
-                print("错误: 当前安装目录不是 Git 仓库，无法通过 Git 更新。")
-                time.sleep(3)
-                return
-            
-            # Fetch remote origin updates
-            subprocess.run(["git", "fetch", "--all"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            # Detect remote branch (prefer current local branch, fallback to origin/main or origin/master)
-            curr = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True)
-            branch = curr.stdout.strip() if curr.returncode == 0 else ""
-            if not branch or branch == "HEAD":
-                branch = "main"
-                for b in ["main", "master"]:
-                    chk = subprocess.run(["git", "rev-parse", "--verify", f"origin/{b}"], capture_output=True, text=True)
-                    if chk.returncode == 0:
-                        branch = b
-                        break
-            
-            local_commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-            remote_commit = subprocess.run(["git", "rev-parse", f"origin/{branch}"], capture_output=True, text=True).stdout.strip()
-            
-            if local_commit == remote_commit:
-                print("\n【版本状态】当前已是最新版本，无需更新！")
-                override = input("是否强制重新拉取代码并覆盖安装？(y/N): ").strip().lower()
-                if override != 'y':
-                    print("已取消更新。")
-                    time.sleep(1.5)
-                    return
-            else:
-                print(f"\n【检测到更新】本地版本: {local_commit[:8]}，远程最新版本: {remote_commit[:8]}")
-                confirm = input("是否确认开始更新并重启服务？(Y/n): ").strip().lower()
-                if confirm not in ('', 'y', 'yes'):
-                    print("已取消更新。")
-                    time.sleep(1.5)
-                    return
-            
-            print(f"\n正在强制重置本地代码至 origin/{branch} ...", flush=True)
-            subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], check=True)
-            
-            # Clean up python cache files
-            print("正在清理 Python 缓存 (pycache)...", flush=True)
-            subprocess.run(["find", ".", "-type", "d", "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"], check=False)
-            
-            print("代码拉取成功，正在重新运行安装脚本...", flush=True)
-            subprocess.run(["bash", "install.sh"])
+    print("正在下载远程部署包并更新...", flush=True)
+    confirm = input(f"将从 {GITHUB_USER}/{GITHUB_REPO}:{DEPLOY_BRANCH} 下载部署包并覆盖程序文件，保留 vpngate_data。是否继续？(Y/n): ").strip().lower()
+    if confirm not in ('', 'y', 'yes'):
+        print("已取消更新。")
+        time.sleep(1.5)
+        return
+    import tempfile
+    import tarfile
+    import urllib.request
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = os.path.join(tmp, "gatewayvpn.tar.gz")
+            print(f"正在下载: {UPDATE_ARCHIVE_URL}", flush=True)
+            req = urllib.request.Request(UPDATE_ARCHIVE_URL, headers={"User-Agent": "gatewayvpn-updater"})
+            with urllib.request.urlopen(req, timeout=30) as response, open(archive_path, "wb") as f:
+                shutil.copyfileobj(response, f)
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(tmp)
+            candidates = [
+                os.path.join(tmp, name)
+                for name in os.listdir(tmp)
+                if os.path.isdir(os.path.join(tmp, name))
+            ]
+            source_dir = next((p for p in candidates if os.path.exists(os.path.join(p, "install.sh"))), "")
+            if not source_dir:
+                raise RuntimeError("部署包中未找到 install.sh")
+            print("部署包下载完成，正在重新运行安装脚本...", flush=True)
+            env = os.environ.copy()
+            env["GATEWAYVPN_BRANCH"] = DEPLOY_BRANCH
+            subprocess.run(["bash", os.path.join(source_dir, "install.sh"), GITHUB_USER, GITHUB_REPO], check=True, env=env)
             print("更新已完成！")
             time.sleep(2)
-        except Exception as e:
-            print(f"更新失败: {e}")
-            time.sleep(4)
-    else:
-        print(f"未找到安装目录: {INSTALL_DIR}")
-        time.sleep(2)
+    except Exception as e:
+        print(f"更新失败: {e}")
+        time.sleep(4)
 
 def uninstall_service():
     confirm = input("确定要完全卸载 GateWayVPN 吗？(y/N): ")
@@ -1075,17 +1177,21 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-${SUDO} "${PYTHON_BIN}" - "${ML_BIN}" "${INSTALL_DIR}" "${SERVICE_KIND}" "${LAUNCHD_PLIST}" "${ML_BIN}" <<'PY'
+${SUDO} "${PYTHON_BIN}" - "${ML_BIN}" "${INSTALL_DIR}" "${SERVICE_KIND}" "${LAUNCHD_PLIST}" "${ML_BIN}" "${GITHUB_USER}" "${GITHUB_REPO}" "${DEPLOY_BRANCH}" "${GITHUB_ARCHIVE_URL}" <<'PY'
 import pathlib
 import sys
 
-path, install_dir, service_kind, launchd_plist, ml_bin = sys.argv[1:]
+path, install_dir, service_kind, launchd_plist, ml_bin, github_user, github_repo, deploy_branch, github_archive_url = sys.argv[1:]
 target = pathlib.Path(path)
 text = target.read_text(encoding="utf-8")
 text = text.replace("${INSTALL_DIR}", install_dir)
 text = text.replace("${SERVICE_KIND}", service_kind)
 text = text.replace("${LAUNCHD_PLIST}", launchd_plist)
 text = text.replace("${ML_BIN}", ml_bin)
+text = text.replace("${GITHUB_USER}", github_user)
+text = text.replace("${GITHUB_REPO}", github_repo)
+text = text.replace("${DEPLOY_BRANCH}", deploy_branch)
+text = text.replace("${GITHUB_ARCHIVE_URL}", github_archive_url)
 target.write_text(text, encoding="utf-8")
 PY
 ${SUDO} chmod +x "${ML_BIN}"
@@ -1177,16 +1283,17 @@ while True:
     fi
 
     # Write config JSON
-    python3 -c "
+    UI_PORT="$UI_PORT" SECRET_PATH="$SECRET_PATH" UI_USERNAME="$UI_USERNAME" UI_PASSWORD="$UI_PASSWORD" AUTH_FILE="$AUTH_FILE" python3 -c "
+import os
 import json
 cfg = {
     'host': '::',
-    'port': int('$UI_PORT'),
-    'secret_path': '$SECRET_PATH',
-    'username': '$UI_USERNAME',
-    'password': '$UI_PASSWORD'
+    'port': int(os.environ['UI_PORT']),
+    'secret_path': os.environ['SECRET_PATH'],
+    'username': os.environ['UI_USERNAME'],
+    'password': os.environ['UI_PASSWORD']
 }
-with open('$AUTH_FILE', 'w', encoding='utf-8') as f:
+with open(os.environ['AUTH_FILE'], 'w', encoding='utf-8') as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
 "
 fi

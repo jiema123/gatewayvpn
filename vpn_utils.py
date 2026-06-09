@@ -13,8 +13,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
-ROOT_DIR = Path(__file__).resolve().parent
-DATA_DIR = ROOT_DIR / "vpngate_data"
+from app_runtime import app_root_dir, data_dir
+
+ROOT_DIR = app_root_dir()
+DATA_DIR = data_dir()
 IP_CACHE_FILE = DATA_DIR / "ip_cache.json"
 OPENVPN_RUNTIME_DIR = DATA_DIR / "runtime"
 TUNNEL_IFACE_FILE = OPENVPN_RUNTIME_DIR / "tunnel_interface.txt"
@@ -170,6 +172,22 @@ def get_current_tunnel_interface() -> str:
             return value
     except OSError:
         pass
+    if IS_MACOS:
+        try:
+            output = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=2)
+            if output.returncode == 0:
+                utuns: list[str] = []
+                for line in output.stdout.splitlines():
+                    if not line or line.startswith("\t"):
+                        continue
+                    name = line.split(":", 1)[0].strip()
+                    if name.startswith("utun"):
+                        utuns.append(name)
+                if utuns:
+                    utuns.sort(key=lambda item: int(item[4:]) if item[4:].isdigit() else 9999)
+                    return utuns[-1]
+        except Exception:
+            pass
     return DEFAULT_TUNNEL_DEVICE
 
 def interface_exists(name: str) -> bool:

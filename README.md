@@ -22,7 +22,7 @@ GateWayVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VP
 
 ### 🚀 一键极速部署 (支持 Debian/Ubuntu/CentOS/Alpine Linux 与 macOS)
 
-在 Linux VPS 上以 root 用户执行；macOS 可直接执行，脚本会在需要写入系统服务时请求 sudo 权限：
+在 Linux VPS 上以 root 用户执行；macOS 可直接执行，脚本会在需要写入系统服务时请求 sudo 权限。安装脚本优先使用本地部署包；通过 `curl | bash` 运行时会优先下载 GitHub Release 的预构建资产，并直接启动打包后的 `gatewayvpn-manager` 可执行应用。若对应 Release 资产不存在，则回退到源码包并在本机构建。
 
 #### 🌟 正式稳定版本 (main 分支)
 ```bash
@@ -38,13 +38,12 @@ bash <(curl -Ls https://raw.githubusercontent.com/jiema123/gatewayvpn/bate/insta
 
 #### 🍎 macOS 部署说明
 
-`install.sh` 已支持 macOS：会使用 Homebrew 安装依赖，部署到 `/usr/local/gatewayvpn`，并创建 `launchd` 服务。也可以采用手动部署方式：
+`install.sh` 已支持 macOS：会使用 Homebrew 安装依赖，默认部署到当前用户的 `~/gatewayvpn`，并创建 `launchd` 服务。服务实际启动的是部署包里的 `bin/gatewayvpn-manager`。也可以采用部署包方式安装：
 
 ```bash
-brew install openvpn curl git python3
-git clone https://github.com/jiema123/gatewayvpn.git
-cd gatewayvpn
-sudo python3 vpngate_manager.py
+tar -xzf gatewayvpn-*.tar.gz
+cd gatewayvpn-*
+bash install.sh
 ```
 
 说明：
@@ -52,6 +51,9 @@ sudo python3 vpngate_manager.py
 - macOS 需要以 `root` 运行，才能创建 OpenVPN 虚拟网卡并绑定代理出站接口。
 - OpenVPN 在 macOS 上通常会创建 `utunX` 接口，程序会自动识别并绑定到实际隧道接口。
 - 一键安装会创建 `/Library/LaunchDaemons/com.gatewayvpn.manager.plist` 并提供 `/usr/local/bin/ml` 管理命令。
+- 构建可执行应用可执行 `bash scripts/build-binary.sh`，产物会生成到 `bin/gatewayvpn-manager`。
+- 发布部署包可执行 `bash scripts/build-release.sh`，产物会生成到 `dist/`。
+- 仓库内置了 GitHub Actions 工作流 `.github/workflows/release-assets.yml`，可自动构建并上传 `main` / `bate` Release 资产。
 
 ---
 
@@ -158,7 +160,7 @@ GateWayVPN is a high-performance, zero-dependency VPN proxy gateway built entire
 
 ### 🚀 One-Click Installation
 
-Run the corresponding command on your Linux VPS as root:
+Run the corresponding command on your Linux VPS as root. On macOS, run it as your normal user and the script will ask for sudo only when creating the system service. The installer prefers a local release package; when run through `curl | bash`, it first tries to download a GitHub Release asset for the current branch and platform, and falls back to the source tarball only when no prebuilt asset exists.
 
 #### 🌟 Stable Release (main branch)
 ```bash
@@ -171,6 +173,30 @@ bash <(curl -Ls https://raw.githubusercontent.com/jiema123/gatewayvpn/bate/insta
 ```
 
 > 💡 **Quick Note**: Once installed, copy the printed URL from the terminal to access the Web UI. Type the `ml` command in the terminal to summon the interactive CLI management console.
+
+#### 🍎 macOS / Release Package
+
+On macOS the default install path is `~/gatewayvpn`, with writable runtime data kept under that directory. To install from a packaged release:
+
+```bash
+tar -xzf gatewayvpn-*.tar.gz
+cd gatewayvpn-*
+bash install.sh
+```
+
+Build the executable from source with:
+
+```bash
+bash scripts/build-binary.sh
+```
+
+Build a release package from the source tree with:
+
+```bash
+bash scripts/build-release.sh
+```
+
+The repository also includes `.github/workflows/release-assets.yml` to publish prebuilt release assets for `main` and `bate`.
 
 ---
 
